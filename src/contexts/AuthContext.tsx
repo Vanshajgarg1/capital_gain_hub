@@ -25,6 +25,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const profileIdRef = React.useRef<string | null>(null);
 
   useEffect(() => {
     const fetchSession = async () => {
@@ -33,18 +34,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const { data: { user }, error } = await supabase.auth.getUser();
         
         if (error) {
-          // If getUser fails (e.g., token expired), clear session
-          setUser(null);
-          setProfile(null);
+          // If getUser fails, only clear session for confirmed auth errors, not network failures
+          const isAuthError = error.name === 'AuthApiError' || error.status === 401 || error.status === 403 || error.status === 400 || error.message.toLowerCase().includes('token');
+
+          if (isAuthError) {
+            setUser(null);
+            setProfile(null);
+            profileIdRef.current = null;
+          } else {
+            console.warn("Network or temporary error fetching user, keeping local session:", error);
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session?.user) {
+              setUser(session.user);
+              if (profileIdRef.current !== session.user.id) {
+                await fetchProfile(session.user.id);
+              }
+            }
+          }
           return;
         }
         
         setUser(user);
         
         if (user) {
-          await fetchProfile(user.id);
+          if (profileIdRef.current !== user.id) {
+            await fetchProfile(user.id);
+          }
         } else {
           setProfile(null);
+          profileIdRef.current = null;
         }
       } catch (err) {
         console.error("Error fetching user:", err);
@@ -64,9 +82,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         
         setUser(session?.user ?? null);
         if (session?.user) {
-          await fetchProfile(session.user.id);
+          if (profileIdRef.current !== session.user.id) {
+            await fetchProfile(session.user.id);
+          }
         } else {
           setProfile(null);
+          profileIdRef.current = null;
         }
         setIsLoading(false);
       }
@@ -91,6 +112,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       
       setProfile(data as UserProfile);
+      profileIdRef.current = userId;
     } catch (err) {
       console.error("Failed to fetch profile:", err);
     }
@@ -102,6 +124,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await supabase.auth.signOut();
       setUser(null);
       setProfile(null);
+      profileIdRef.current = null;
     } catch (err) {
       console.error("Error signing out:", err);
     } finally {

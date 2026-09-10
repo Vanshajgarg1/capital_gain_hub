@@ -6,10 +6,12 @@ import { getPublishedCourses } from "@/lib/api/courses";
 import { supabase } from "@/lib/supabase";
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+const supabaseAdmin = process.env.SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    )
+  : null;
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ArrowRight, BookOpen, Brain, ShieldAlert, Target, TrendingUp, PlayCircle } from "lucide-react";
@@ -44,7 +46,7 @@ export default async function Home() {
       .order("order_index", { ascending: true })
       .order("created_at", { ascending: false }),
     getPublishedPage("home"),
-    supabaseAdmin.from("profiles").select("id", { count: "exact", head: true }).eq("role", "STUDENT"),
+    supabaseAdmin ? supabaseAdmin.from("profiles").select("id", { count: "exact", head: true }).eq("role", "STUDENT") : Promise.resolve({ data: null, count: 0 }),
     supabase.from("lessons").select("id", { count: "exact", head: true }),
   ]);
 

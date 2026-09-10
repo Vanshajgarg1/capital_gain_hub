@@ -2,18 +2,25 @@ import { NextResponse } from "next/server";
 import Mux from "@mux/mux-node";
 import { createClient } from "@supabase/supabase-js";
 
-const mux = new Mux({
-  tokenId: process.env.MUX_TOKEN_ID!,
-  tokenSecret: process.env.MUX_TOKEN_SECRET!,
-});
 
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 export async function POST(request: Request) {
   try {
+    if (!process.env.MUX_TOKEN_ID || !process.env.MUX_TOKEN_SECRET || !process.env.SUPABASE_SERVICE_ROLE_KEY || !process.env.MUX_SIGNING_KEY_ID || !process.env.MUX_SIGNING_KEY_PRIVATE_KEY) {
+      console.error("Missing required environment variables for Mux token");
+      return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
+    }
+
+    const mux = new Mux({
+      tokenId: process.env.MUX_TOKEN_ID,
+      tokenSecret: process.env.MUX_TOKEN_SECRET,
+    });
+
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+
     const { playbackId, lessonId, courseId } = await request.json();
 
     if (!playbackId || (!lessonId && !courseId)) {
