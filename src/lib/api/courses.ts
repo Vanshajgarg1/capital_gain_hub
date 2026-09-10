@@ -156,13 +156,27 @@ export async function updateCourse(id: string, courseData: UpdateCourseInput): P
   return data as Course;
 }
 
-export async function deleteCourse(id: string): Promise<void> {
+export async function deleteCourse(id: string): Promise<{ archived: boolean }> {
   const { error } = await supabase
     .from("courses")
     .delete()
     .eq("id", id);
 
-  if (error) throw error;
+  if (error) {
+    // 23503 is the PostgreSQL error code for foreign_key_violation
+    if (error.code === '23503') {
+      const { error: archiveError } = await supabase
+        .from("courses")
+        .update({ is_archived: true, is_published: false })
+        .eq("id", id);
+
+      if (archiveError) throw archiveError;
+      return { archived: true };
+    }
+    throw error;
+  }
+
+  return { archived: false };
 }
 
 export async function createModule(moduleData: CreateModuleInput): Promise<Module> {
