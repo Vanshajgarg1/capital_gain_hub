@@ -1,31 +1,89 @@
 import { HeroSection } from "@/components/public/HeroSection";
+import { YoutubeSection } from "@/components/public/youtube-section";
 import { CourseCard } from "@/components/public/CourseCard";
 import { PricingCard } from "@/components/public/PricingCard";
-import { MOCK_FAQS, MOCK_TESTIMONIALS } from "@/lib/mock-data";
 import { getPublishedCourses } from "@/lib/api/courses";
-import { Button } from "@/components/ui/button";
+import { supabase } from "@/lib/supabase";
+import { createClient } from "@supabase/supabase-js";
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ArrowRight, BookOpen, Brain, ShieldAlert, Target, TrendingUp, PlayCircle } from "lucide-react";
 import { Youtube } from "@/components/ui/social-icons";
 import Link from "next/link";
 import Image from "next/image";
+import { cn } from "@/lib/utils";
+
+// Animation Wrappers
+import { ScrollReveal } from "@/components/ui/animations/ScrollReveal";
+import { AnimatedBackground } from "@/components/ui/animations/AnimatedBackground";
+import { BrandMarquee } from "@/components/ui/animations/BrandMarquee";
+import { PremiumCTA } from "@/components/ui/animations/PremiumCTA";
+
+import { getPublishedPage } from "@/lib/api/cms";
+import { CmsRenderer } from "@/components/public/CmsRenderer";
+
+export const revalidate = 0;
 
 export default async function Home() {
-  const courses = await getPublishedCourses();
+  const [courses, { data: testimonialsData }, { data: faqsData }, cmsPage, studentData, lessonData] = await Promise.all([
+    getPublishedCourses(),
+    supabase
+      .from("testimonials")
+      .select("*")
+      .eq("is_published", true)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("faqs")
+      .select("*")
+      .eq("is_published", true)
+      .order("order_index", { ascending: true })
+      .order("created_at", { ascending: false }),
+    getPublishedPage("home"),
+    supabaseAdmin.from("profiles").select("id", { count: "exact", head: true }).eq("role", "STUDENT"),
+    supabase.from("lessons").select("id", { count: "exact", head: true }),
+  ]);
+
+  const studentCount = studentData?.count || 0;
+  const lessonCount = lessonData?.count || 0;
+
+  const testimonials = testimonialsData || [];
+  const faqs = faqsData || [];
+
+  const hasCourseError = courses === null;
+  const publishedCourses = courses ?? [];
+  
+  // If CMS page exists, we use its sections for the top of the page.
+  const hasCmsContent = !!cmsPage && !!cmsPage.sections && cmsPage.sections.length > 0;
 
   return (
-    <div className="flex flex-col min-h-screen">
-      <HeroSection />
+    <div className="flex flex-col min-h-screen relative z-0">
+      <AnimatedBackground />
+      
+      {hasCmsContent ? (
+        <CmsRenderer sections={cmsPage.sections || []} />
+      ) : (
+        <>
+          <HeroSection studentCount={studentCount} lessonCount={lessonCount} />
+          <BrandMarquee />
+        </>
+      )}
 
       {/* Learning Path Section */}
-      <section id="learning-path" className="py-24 bg-background relative overflow-hidden border-t border-border/50">
-        <div className="container mx-auto px-4 md:px-6">
-          <div className="text-center max-w-3xl mx-auto mb-16">
-            <h2 className="text-3xl md:text-5xl font-bold mb-6">Your Trading Journey</h2>
-            <p className="text-lg text-muted-foreground">
-              A structured, step-by-step progression from understanding the basics to mastering advanced institutional concepts.
-            </p>
-          </div>
+      <section id="learning-path" className="py-32 relative overflow-hidden">
+        <div className="container mx-auto px-4 md:px-6 relative z-10">
+          <ScrollReveal>
+            <div className="text-center max-w-3xl mx-auto mb-20">
+              <h2 className="text-4xl md:text-5xl lg:text-6xl font-extrabold mb-6 tracking-tight">Your Trading Journey</h2>
+              <p className="text-xl text-muted-foreground">
+                A structured, step-by-step progression from understanding the basics to mastering advanced institutional concepts.
+              </p>
+            </div>
+          </ScrollReveal>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-5xl mx-auto">
             {[
@@ -36,200 +94,250 @@ export default async function Home() {
               { num: "05", title: "ADVANCED STRATEGIES", desc: "Options, futures, and smart money concepts.", icon: <Brain className="w-8 h-8 text-primary" /> },
               { num: "06", title: "PROFESSIONAL MINDSET", desc: "Trading psychology and building a consistent edge.", icon: <ArrowRight className="w-8 h-8 text-primary" /> }
             ].map((step, i) => (
-              <div key={i} className="glass-card p-8 rounded-2xl relative overflow-hidden group">
-                <div className="absolute top-0 right-0 p-6 opacity-10 font-black text-6xl group-hover:opacity-20 transition-opacity text-primary">
-                  {step.num}
+              <ScrollReveal key={i} delay={i * 0.1} direction="up">
+                <div className="glass-card p-8 rounded-2xl relative overflow-hidden group hover:border-primary/50 transition-colors duration-500 hover:-translate-y-2 transform">
+                  <div className="absolute inset-0 bg-gradient-to-b from-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                  <div className="absolute top-0 right-0 p-6 opacity-10 font-black text-6xl group-hover:opacity-20 group-hover:scale-110 transition-all text-primary duration-500">
+                    {step.num}
+                  </div>
+                  <div className="mb-6 relative z-10 group-hover:scale-110 transition-transform origin-left">{step.icon}</div>
+                  <h3 className="text-xl font-bold mb-3 relative z-10">{step.title}</h3>
+                  <p className="text-muted-foreground relative z-10">{step.desc}</p>
+                  
+                  {/* Connective Line for Timeline effect */}
+                  {i < 5 && (
+                    <div className="hidden md:block absolute top-1/2 -right-4 w-8 h-px bg-primary/20 z-0" />
+                  )}
                 </div>
-                <div className="mb-6">{step.icon}</div>
-                <h3 className="text-xl font-bold mb-3">{step.title}</h3>
-                <p className="text-muted-foreground">{step.desc}</p>
-              </div>
+              </ScrollReveal>
             ))}
           </div>
         </div>
       </section>
 
       {/* Courses Section */}
-      <section id="courses" className="py-24 bg-secondary/30 border-t border-border/50">
-        <div className="container mx-auto px-4 md:px-6">
-          <div className="flex flex-col md:flex-row items-end justify-between mb-12 gap-6">
-            <div className="max-w-2xl">
-              <h2 className="text-3xl md:text-5xl font-bold mb-6">Choose Your Learning Path</h2>
-              <p className="text-lg text-muted-foreground">
-                Whether you are just starting out or looking to refine your edge, we have a comprehensive program tailored for you.
-              </p>
+      <section id="courses" className="py-32 relative">
+        <div className="absolute inset-0 bg-secondary/50 backdrop-blur-3xl z-[-1]" />
+        <div className="container mx-auto px-4 md:px-6 relative z-10">
+          <ScrollReveal direction="up">
+            <div className="flex flex-col md:flex-row items-end justify-between mb-16 gap-6">
+              <div className="max-w-2xl">
+                <div className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm font-medium text-muted-foreground w-fit mb-4">
+                  Curriculum
+                </div>
+                <h2 className="text-4xl md:text-5xl lg:text-6xl font-extrabold mb-6 tracking-tight">Choose Your Edge</h2>
+                <p className="text-xl text-muted-foreground">
+                  Whether you are just starting out or looking to refine your edge, we have a comprehensive program tailored for you.
+                </p>
+              </div>
+              <Link href="/courses" className={cn("hidden md:flex items-center justify-center rounded-full px-8 h-12 border border-primary/20 bg-background hover:bg-primary/10 hover:text-primary transition-colors text-sm font-medium", buttonVariants({ variant: "outline" }))}>
+                  View All Courses
+              </Link>
             </div>
-            <Link href="/courses">
-              <Button variant="outline" className="hidden md:flex">View All Courses</Button>
-            </Link>
-          </div>
+          </ScrollReveal>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {courses.length > 0 ? (
-              courses.map((course) => (
-                <CourseCard key={course.id} course={course} />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+            {courses === null ? (
+              <ScrollReveal className="col-span-full">
+                <div className="py-16 text-center glass-card rounded-2xl border border-red-500/10 bg-red-500/5">
+                  <p className="text-red-500 text-xl font-medium mb-2">Courses temporarily unavailable</p>
+                  <p className="text-muted-foreground">Please try again later. Our team has been notified.</p>
+                </div>
+              </ScrollReveal>
+            ) : courses.length > 0 ? (
+              courses.map((course, i) => (
+                <ScrollReveal key={course.id} delay={i * 0.1}>
+                  <div className="h-full transition-transform duration-500 hover:-translate-y-2">
+                    <CourseCard course={course} />
+                  </div>
+                </ScrollReveal>
               ))
             ) : (
-              <div className="col-span-full py-12 text-center glass-card rounded-2xl">
-                <p className="text-muted-foreground text-lg">New courses are launching soon. Stay tuned!</p>
-              </div>
+              <ScrollReveal className="col-span-full">
+                <div className="py-16 text-center glass-card rounded-2xl">
+                  <p className="text-muted-foreground text-xl">New premium programs are launching soon.</p>
+                </div>
+              </ScrollReveal>
             )}
           </div>
           <div className="mt-8 flex justify-center md:hidden">
-            <Link href="/courses">
-              <Button variant="outline" className="w-full">View All Courses</Button>
+            <Link href="/courses" className={cn("flex w-full items-center justify-center rounded-full h-10 border border-input bg-background hover:bg-accent hover:text-accent-foreground text-sm font-medium transition-colors", buttonVariants({ variant: "outline" }))}>
+              View All Courses
             </Link>
           </div>
         </div>
       </section>
 
-      {/* Pricing Section */}
-      <section id="pricing" className="py-24 bg-background border-t border-border/50">
-        <div className="container mx-auto px-4 md:px-6">
-          <div className="text-center max-w-3xl mx-auto mb-16">
-            <h2 className="text-3xl md:text-5xl font-bold mb-6">Invest in Your Education</h2>
-            <p className="text-lg text-muted-foreground">
-              Simple, transparent pricing. One-time payment for lifetime access.
-            </p>
-          </div>
+      <BrandMarquee />
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-5xl mx-auto items-center">
-            <PricingCard plan={{
-              name: "STARTER",
-              description: "For complete beginners",
-              price: 49,
-              features: ["Trading Foundations Course", "5 Modules", "Lifetime Access", "Community Support"]
-            }} />
-            <PricingCard plan={{
-              name: "ULTIMATE",
-              description: "Complete trading education",
-              price: 399,
-              isPopular: true,
-              features: ["All 4 Courses", "Complete Learning Path", "Advanced Strategies", "Priority Support", "1-on-1 Mentoring Session", "Lifetime Updates"]
-            }} />
-            <PricingCard plan={{
-              name: "PRO",
-              description: "For serious learners",
-              price: 149,
-              features: ["Technical Trading Mastery", "10 Modules", "Lifetime Access", "Standard Support", "Quizzes & Exercises"]
-            }} />
-          </div>
+      {/* Pricing Section */}
+      <section id="pricing" className="py-32 relative">
+        <div className="container mx-auto px-4 md:px-6">
+          <ScrollReveal>
+            <div className="text-center max-w-3xl mx-auto mb-20">
+              <h2 className="text-4xl md:text-5xl lg:text-6xl font-extrabold mb-6 tracking-tight">Invest in Your Process</h2>
+              <p className="text-xl text-muted-foreground">
+                Simple, transparent pricing. One-time payment for lifetime access to the ecosystem.
+              </p>
+            </div>
+          </ScrollReveal>
+
+          {hasCourseError ? (
+            <ScrollReveal>
+              <div className="py-20 text-center glass-card rounded-3xl border border-red-500/10 bg-red-500/5 max-w-3xl mx-auto">
+                <ShieldAlert className="w-12 h-12 text-red-500 mx-auto mb-4 opacity-50" />
+                <h3 className="text-2xl font-bold text-red-500 mb-2">Temporarily Unavailable</h3>
+                <p className="text-muted-foreground text-lg">Courses are temporarily unavailable. Please try again later.</p>
+              </div>
+            </ScrollReveal>
+          ) : publishedCourses.length > 0 ? (
+            <div className={cn(
+              "grid grid-cols-1 gap-8 max-w-6xl mx-auto items-center",
+              publishedCourses.length === 1 ? "md:grid-cols-1 max-w-md" :
+              publishedCourses.length === 2 ? "md:grid-cols-2 max-w-4xl" :
+              "md:grid-cols-3"
+            )}>
+              {publishedCourses.map((course, i) => (
+                <ScrollReveal key={course.id} delay={i * 0.2} direction="up">
+                  <div className="relative group h-full">
+                    <PricingCard course={course} isFeatured={i === 0 && !publishedCourses.some(c => c.is_featured)} />
+                  </div>
+                </ScrollReveal>
+              ))}
+            </div>
+          ) : (
+            <ScrollReveal>
+              <div className="py-20 text-center glass-card rounded-3xl border border-white/5 max-w-3xl mx-auto">
+                <ShieldAlert className="w-12 h-12 text-primary mx-auto mb-4 opacity-50" />
+                <h3 className="text-2xl font-bold text-white mb-2">Programs Updating</h3>
+                <p className="text-muted-foreground text-lg">Our premium curriculum is currently being updated for the next cohort. Check back soon.</p>
+              </div>
+            </ScrollReveal>
+          )}
         </div>
       </section>
 
       {/* YouTube Section */}
-      <section id="youtube" className="py-24 bg-secondary/30 border-t border-border/50 overflow-hidden relative">
-        <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?q=80&w=1200&auto=format&fit=crop')] bg-cover bg-center opacity-5"></div>
-        <div className="container mx-auto px-4 md:px-6 relative z-10">
-          <div className="flex flex-col md:flex-row items-center justify-between gap-12">
-            <div className="flex-1 space-y-6">
-              <div className="inline-flex items-center rounded-full bg-red-500/10 px-3 py-1 text-sm font-medium text-red-500">
-                <Youtube className="w-4 h-4 mr-2" />
-                Free Education
-              </div>
-              <h2 className="text-3xl md:text-5xl font-bold">Learn Free. <br/>Go Deeper.</h2>
-              <p className="text-lg text-muted-foreground max-w-lg">
-                Start your journey with our free YouTube content. When you are ready for a structured, step-by-step professional program, join the Hub.
-              </p>
-              <Button size="lg" className="bg-red-600 hover:bg-red-700 text-white shadow-lg shadow-red-500/20">
-                <Youtube className="mr-2 h-5 w-5" />
-                Visit YouTube Channel
-              </Button>
-            </div>
-            
-            <div className="flex-1 w-full max-w-lg">
-              <div className="glass-card rounded-2xl p-4 rotate-3 hover:rotate-0 transition-transform duration-500">
-                <div className="aspect-video bg-muted rounded-xl relative overflow-hidden flex items-center justify-center group cursor-pointer">
-                  <img src="https://images.unsplash.com/photo-1590283603385-17ffb3a7f29f?q=80&w=800&auto=format&fit=crop" className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:opacity-40 transition-opacity" alt="YouTube Thumbnail" />
-                  <div className="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform relative z-10">
-                    <PlayCircle className="w-8 h-8 text-white fill-white" />
-                  </div>
-                </div>
-                <div className="mt-4">
-                  <h4 className="font-bold">Smart Money Concepts Explained</h4>
-                  <p className="text-sm text-muted-foreground">145K views • 2 weeks ago</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <YoutubeSection />
 
       {/* Testimonials */}
-      <section className="py-24 bg-background border-t border-border/50">
-        <div className="container mx-auto px-4 md:px-6">
-          <div className="text-center max-w-3xl mx-auto mb-16">
-            <h2 className="text-3xl md:text-5xl font-bold mb-6">Built for Serious Learners</h2>
-            <p className="text-lg text-muted-foreground">
-              Don't just take our word for it. Hear from students who have transformed their trading journey.
-            </p>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-6xl mx-auto">
-            {MOCK_TESTIMONIALS.map((testimonial) => (
-              <div key={testimonial.id} className="glass-card p-8 rounded-2xl flex flex-col h-full">
-                <div className="flex gap-1 mb-6">
-                  {[...Array(testimonial.rating)].map((_, i) => (
-                    <svg key={i} className="w-5 h-5 text-yellow-500 fill-current" viewBox="0 0 24 24">
-                      <path d="M12 17.27L18.18 21L16.54 13.97L22 9.24L14.81 8.63L12 2L9.19 8.63L2 9.24L7.46 13.97L5.82 21L12 17.27Z" />
-                    </svg>
-                  ))}
+      {testimonials.length > 0 ? (
+        <section className="py-32 relative">
+          <div className="container mx-auto px-4 md:px-6">
+            <ScrollReveal>
+              <div className="text-center max-w-3xl mx-auto mb-20">
+                <div className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm font-medium text-muted-foreground w-fit mb-4">
+                  Success Stories
                 </div>
-                <p className="text-foreground/90 leading-relaxed mb-8 flex-1">
-                  "{testimonial.content}"
+                <h2 className="text-4xl md:text-5xl lg:text-6xl font-extrabold mb-6 tracking-tight">Built for Serious Learners</h2>
+                <p className="text-xl text-muted-foreground">
+                  Don't just take our word for it. Hear from students who have transformed their trading process.
                 </p>
-                <div className="flex items-center gap-4 mt-auto pt-6 border-t border-border/50">
-                  <img src={testimonial.avatar_url} alt={testimonial.name} className="w-12 h-12 rounded-full object-cover" />
-                  <div>
-                    <h4 className="font-bold">{testimonial.name}</h4>
-                    <p className="text-xs text-primary">{testimonial.student_type}</p>
-                  </div>
-                </div>
               </div>
-            ))}
+            </ScrollReveal>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto">
+              {testimonials.map((testimonial, i) => (
+                <ScrollReveal key={testimonial.id} delay={i * 0.1}>
+                  <div className="glass-card p-8 rounded-3xl flex flex-col h-full hover:border-primary/30 transition-all duration-500 hover:-translate-y-2 group">
+                    <div className="flex gap-1 mb-8">
+                      {[...Array(testimonial.rating || 5)].map((_, i) => (
+                        <svg key={i} className="w-5 h-5 text-primary fill-current group-hover:scale-110 transition-transform origin-bottom" style={{ transitionDelay: `${i * 50}ms` }} viewBox="0 0 24 24">
+                          <path d="M12 17.27L18.18 21L16.54 13.97L22 9.24L14.81 8.63L12 2L9.19 8.63L2 9.24L7.46 13.97L5.82 21L12 17.27Z" />
+                        </svg>
+                      ))}
+                    </div>
+                    <p className="text-foreground/90 leading-relaxed mb-8 flex-1 text-lg italic">
+                      "{testimonial.review_text}"
+                    </p>
+                    <div className="flex items-center gap-4 mt-auto pt-6 border-t border-white/10">
+                      <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center text-primary font-bold text-xl shrink-0 border border-primary/30">
+                        {testimonial.student_name.charAt(0).toUpperCase()}
+                      </div>
+                      <div>
+                        <h4 className="font-bold">{testimonial.student_name}</h4>
+                        <p className="text-xs text-primary/80 uppercase tracking-wider font-semibold">Student</p>
+                      </div>
+                    </div>
+                  </div>
+                </ScrollReveal>
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
       {/* FAQ */}
-      <section id="faq" className="py-24 bg-secondary/30 border-t border-border/50">
-        <div className="container mx-auto px-4 md:px-6 max-w-3xl">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl md:text-5xl font-bold mb-6">Frequently Asked Questions</h2>
+      {faqs.length > 0 ? (
+        <section id="faq" className="py-32 relative bg-secondary/30">
+          <div className="absolute inset-0 bg-[url('/grid.svg')] bg-center opacity-[0.02]" />
+          <div className="container mx-auto px-4 md:px-6 max-w-4xl relative z-10">
+            <ScrollReveal>
+              <div className="text-center mb-16">
+                <h2 className="text-4xl md:text-5xl lg:text-6xl font-extrabold mb-6 tracking-tight">Frequently Asked Questions</h2>
+              </div>
+            </ScrollReveal>
+            
+            <ScrollReveal delay={0.2}>
+              <Accordion defaultValue={[faqs[0].id]} className="w-full space-y-4">
+                {faqs.map((faq) => (
+                  <AccordionItem key={faq.id} value={faq.id} className="border border-white/10 bg-black/40 backdrop-blur-xl px-8 rounded-2xl border-b transition-all duration-300 data-[state=open]:border-primary/30 data-[state=open]:shadow-[0_0_30px_rgba(23,163,74,0.1)]">
+                    <AccordionTrigger className="text-left font-bold text-xl hover:no-underline py-8 hover:text-primary transition-colors">
+                      {faq.question}
+                    </AccordionTrigger>
+                    <AccordionContent className="text-muted-foreground pb-8 leading-relaxed text-lg whitespace-pre-wrap">
+                      {faq.answer}
+                    </AccordionContent>
+                  </AccordionItem>
+                ))}
+              </Accordion>
+            </ScrollReveal>
+            
+            <ScrollReveal delay={0.3}>
+              <div className="mt-12 text-center">
+                <Link 
+                  href="/faq" 
+                  className={cn(
+                    buttonVariants({ variant: "outline" }),
+                    "rounded-full px-8 h-12 border-primary/20 hover:bg-primary/10 hover:text-primary transition-colors text-lg"
+                  )}
+                >
+                  View all FAQs <ArrowRight className="ml-2 h-5 w-5" />
+                </Link>
+              </div>
+            </ScrollReveal>
           </div>
-          
-          <Accordion defaultValue={["faq-0"]} className="w-full">
-            {MOCK_FAQS.map((faq) => (
-              <AccordionItem key={faq.id} value={faq.id} className="border-border/50 mb-4 glass-card px-6 rounded-xl border-b-0">
-                <AccordionTrigger className="text-left font-semibold text-lg hover:no-underline py-6">
-                  {faq.question}
-                </AccordionTrigger>
-                <AccordionContent className="text-muted-foreground pb-6 leading-relaxed">
-                  {faq.answer}
-                </AccordionContent>
-              </AccordionItem>
-            ))}
-          </Accordion>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
-      {/* Final CTA */}
-      <section className="py-32 bg-primary relative overflow-hidden">
-        <div className="absolute inset-0 bg-[url('/grid.svg')] bg-center opacity-20" />
-        <div className="container mx-auto px-4 md:px-6 relative z-10 text-center">
-          <h2 className="text-4xl md:text-6xl font-black text-primary-foreground mb-6">
-            Your Trading Journey Starts Here.
-          </h2>
-          <p className="text-xl text-primary-foreground/80 max-w-2xl mx-auto mb-10">
-            Build your knowledge. Develop your process. Keep learning.
-          </p>
-          <Link href="/courses">
-            <Button size="lg" variant="secondary" className="text-lg h-14 px-10 rounded-full font-bold shadow-2xl">
-              Explore Courses
-            </Button>
-          </Link>
-        </div>
-      </section>
+      {/* Cinematic Final CTA */}
+      {!hasCmsContent && (
+        <section className="py-40 relative overflow-hidden flex items-center justify-center min-h-[70vh]">
+          <div className="absolute inset-0 bg-primary z-0" />
+          <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/80 z-10" />
+          <div className="absolute inset-0 bg-[url('/grid.svg')] bg-center opacity-20 mix-blend-overlay z-10" />
+          
+          {/* Animated glowing orbs in CTA */}
+          <div className="absolute top-0 right-0 w-96 h-96 bg-white/20 rounded-full blur-[100px] z-10 animate-pulse" />
+          <div className="absolute bottom-0 left-0 w-96 h-96 bg-cyan-400/20 rounded-full blur-[100px] z-10 animate-pulse" style={{ animationDelay: "1s" }} />
+
+          <div className="container mx-auto px-4 md:px-6 relative z-20 text-center max-w-4xl">
+            <ScrollReveal>
+              <h2 className="text-6xl md:text-8xl font-black text-white mb-8 tracking-tighter leading-none">
+                STOP GUESSING.<br/>START LEARNING.
+              </h2>
+              <p className="text-2xl text-white/80 max-w-2xl mx-auto mb-12 font-medium">
+                From market basics to advanced strategies. Build a process. Build confidence. Build your edge.
+              </p>
+              <Link href="/courses">
+                <PremiumCTA className="bg-white text-primary hover:bg-white/90 h-16 px-12 text-xl shadow-[0_0_50px_rgba(255,255,255,0.3)]">
+                  Start Your Journey
+                </PremiumCTA>
+              </Link>
+            </ScrollReveal>
+          </div>
+        </section>
+      )}
     </div>
   );
 }
