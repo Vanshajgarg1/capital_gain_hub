@@ -49,8 +49,15 @@ export default function AdminCoursesPage() {
     if (!courseToDelete) return;
     try {
       setIsDeleting(true);
-      await deleteCourse(courseToDelete);
-      setCourses(courses.filter((c) => c.id !== courseToDelete));
+      const result = await deleteCourse(courseToDelete);
+
+      if (result && result.archived) {
+        setError("This program has related records and cannot be permanently deleted. It has been archived instead.");
+        setCourses(courses.map(c => c.id === courseToDelete ? { ...c, is_archived: true, is_published: false } : c));
+      } else {
+        setCourses(courses.filter((c) => c.id !== courseToDelete));
+      }
+
       setDeleteDialogOpen(false);
     } catch (err: any) {
       setError(err.message || "Failed to delete course");
@@ -195,7 +202,11 @@ export default function AdminCoursesPage() {
                           ₹{course.price.toLocaleString("en-IN")}
                         </TableCell>
                         <TableCell className="py-4">
-                          {course.is_published ? (
+                          {course.is_archived ? (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-red-500/10 text-red-500 border border-red-500/20 rounded-full text-[10px] font-black uppercase tracking-widest">
+                              <div className="w-1.5 h-1.5 rounded-full bg-red-500 shadow-[0_0_5px_rgba(239,68,68,0.8)]" /> Archived
+                            </span>
+                          ) : course.is_published ? (
                             <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 rounded-full text-[10px] font-black uppercase tracking-widest">
                               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.8)]" /> Active
                             </span>
