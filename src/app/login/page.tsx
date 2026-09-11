@@ -18,6 +18,7 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
 
   useEffect(() => {
     // Safely check for OAuth errors returned from the server callback
@@ -28,7 +29,30 @@ export default function LoginPage() {
         window.history.replaceState({}, document.title, window.location.pathname);
       }
     }
-  }, []);
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session) {
+        setSuccess(true);
+
+        // Fetch profile to redirect based on role
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", session.user.id)
+          .single();
+
+        if (profile?.role === "ADMIN") {
+          router.push("/admin");
+        } else {
+          router.push("/dashboard");
+        }
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [router]);
 
   const handleGoogleLogin = async () => {
     try {
@@ -38,7 +62,7 @@ export default function LoginPage() {
       const { error: signInError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}/dashboard`,
+          redirectTo: `${window.location.origin}/login`,
         }
       });
 
@@ -56,7 +80,7 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+      const { error: signInError } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
@@ -65,18 +89,7 @@ export default function LoginPage() {
         throw signInError;
       }
 
-      // Fetch profile to redirect based on role
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("id", data.user.id)
-        .single();
-
-      if (profile?.role === "ADMIN") {
-        router.push("/admin");
-      } else {
-        router.push("/dashboard");
-      }
+      // onAuthStateChange will handle the success state and redirect
     } catch (err: any) {
       setError(err.message || "Invalid login credentials.");
     } finally {
@@ -156,6 +169,20 @@ export default function LoginPage() {
             <p className="text-muted-foreground">Enter your credentials to access your terminal.</p>
           </div>
 
+          {success && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 p-4 rounded-xl flex items-start gap-3 mb-5"
+            >
+              <ShieldCheck className="h-5 w-5 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-bold">Successfully logged in!</p>
+                <p className="text-sm">Welcome back to Capital Gain Hub.</p>
+              </div>
+            </motion.div>
+          )}
+
           <form onSubmit={handleLogin} className="space-y-5">
             {error && (
               <motion.div 
@@ -187,7 +214,7 @@ export default function LoginPage() {
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <Label htmlFor="password" className="text-xs uppercase tracking-widest text-muted-foreground font-bold">Password</Label>
-                <Link href="#" className="text-xs font-bold text-primary hover:text-primary/80 transition-colors">
+                <Link href="/forgot-password" className="text-xs font-bold text-primary hover:text-primary/80 transition-colors">
                   Forgot password?
                 </Link>
               </div>
