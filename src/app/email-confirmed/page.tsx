@@ -24,18 +24,18 @@ export default function EmailConfirmedPage() {
         </div>
         
         <h1 className="text-3xl font-black tracking-tighter text-white mb-4">
-          Email Verified Successfully
+          Email verified successfully!
         </h1>
         
         <p className="text-muted-foreground mb-8 text-base">
-          Your Capital Gain Hub account is now active. You can now log in and start learning.
+          Your Capital Gain Hub account is now verified. You can now sign in.
         </p>
 
         <div className="space-y-4">
           <Link href="/login" className={cn(buttonVariants({ variant: "default" }), "w-full h-14 rounded-xl text-base font-bold bg-white text-black hover:bg-gray-200 transition-all group overflow-hidden relative")}>
             <div className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-black/10 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
             <span className="flex items-center justify-center gap-2">
-              Login to Capital Gain Hub <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              Continue to Login <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
             </span>
           </Link>
 
