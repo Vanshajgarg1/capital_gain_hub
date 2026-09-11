@@ -24,8 +24,16 @@ export default function LoginPage() {
     // Safely check for OAuth errors returned from the server callback
     if (typeof window !== "undefined") {
       const searchParams = new URLSearchParams(window.location.search);
-      if (searchParams.get("error") === "oauth_failed") {
+      const errorParam = searchParams.get("error");
+      
+      if (errorParam === "oauth_failed") {
         setError("Unable to connect to Google. Please try again.");
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (errorParam === "device_active") {
+        setError("Your account is already logged in on another device. Please log out from your other device before logging in here.");
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (errorParam === "session_ended") {
+        setError("Your session has ended. Please log in again.");
         window.history.replaceState({}, document.title, window.location.pathname);
       }
     }
