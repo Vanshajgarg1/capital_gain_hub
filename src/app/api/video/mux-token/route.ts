@@ -45,17 +45,23 @@ export async function POST(request: Request) {
       user = authData.user;
     }
 
-    // Free preview check does not require a user
     let isFreePreview = false;
+    let actualPlaybackId = playbackId;
+
     if (lessonId) {
       const { data: lesson } = await supabaseAdmin
         .from("lessons")
-        .select("is_free_preview")
+        .select("is_free_preview, video_id")
         .eq("id", lessonId)
         .single();
         
-      if (lesson?.is_free_preview) {
-        isFreePreview = true;
+      if (lesson) {
+        if (lesson.is_free_preview) {
+          isFreePreview = true;
+        }
+        if (lesson.video_id) {
+          actualPlaybackId = lesson.video_id;
+        }
       }
     }
 
@@ -112,7 +118,8 @@ export async function POST(request: Request) {
     }
 
     // Generate JWT using Mux SDK
-    const jwtToken = await mux.jwt.signPlaybackId(playbackId, {
+    const jwtToken = await mux.jwt.signPlaybackId(actualPlaybackId, {
+      type: "video",
       keyId: process.env.MUX_SIGNING_KEY_ID!,
       keySecret: process.env.MUX_SIGNING_KEY_PRIVATE_KEY!,
       expiration: "1h", // Short-lived token

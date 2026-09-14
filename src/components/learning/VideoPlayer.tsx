@@ -39,6 +39,9 @@ export const VideoPlayer = memo(function VideoPlayer({
 
   useEffect(() => {
     if (provider === "mux" && videoId) {
+      setMuxToken(null);
+      setMuxError(null);
+      
       const fetchToken = async () => {
         try {
           const { data: { session } } = await supabase.auth.getSession();

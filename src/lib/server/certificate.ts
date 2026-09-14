@@ -21,7 +21,9 @@ export async function generateAndSaveCertificate(userId: string, courseId: strin
       return { error: "NOT_ENROLLED", status: 403 };
     }
 
-    const courseTitle = ((enrollment.courses as any).title || "Unknown Course").replace(/\s*for\s+student$/i, "");
+    const courseTitle = ((enrollment.courses as any).title || "Unknown Course")
+      .replace(/\s*for\s+student$/i, "")
+      .replace(/→/g, "->");
 
     // 2. INDEPENDENT PROGRESS VERIFICATION
     // Step 2a: Get all lessons for the course using anon client since service_role lacks SELECT on lessons table

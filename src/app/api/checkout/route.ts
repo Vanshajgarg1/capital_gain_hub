@@ -161,8 +161,14 @@ export async function POST(request: Request) {
               },
               { status: 200 }
             );
-          } catch (rzpErr) {
-            console.error("Razorpay order recovery failed:", rzpErr);
+          } catch (rzpErr: any) {
+            console.error("[Diagnostics] Razorpay order recovery failed:", {
+              error: rzpErr?.message || String(rzpErr),
+              statusCode: rzpErr?.statusCode,
+              amount: amount_paise,
+              currency: "INR",
+              keyIdPrefix: razorpayKeyId?.substring(0, 8)
+            });
             return NextResponse.json({ error: "Failed to create payment session" }, { status: 500 });
           }
         }
@@ -197,8 +203,14 @@ export async function POST(request: Request) {
         receipt: newOrder.id,
       });
       rzpOrderId = rzpOrder.id;
-    } catch (rzpErr) {
-      console.error("Razorpay order creation failed:", rzpErr);
+    } catch (rzpErr: any) {
+      console.error("[Diagnostics] Razorpay order creation failed:", {
+        error: rzpErr?.message || String(rzpErr),
+        statusCode: rzpErr?.statusCode,
+        amount: amount_paise,
+        currency: "INR",
+        keyIdPrefix: razorpayKeyId?.substring(0, 8)
+      });
       return NextResponse.json({ error: "Failed to create payment session" }, { status: 500 });
     }
 
