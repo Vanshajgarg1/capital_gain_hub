@@ -9,7 +9,7 @@ import { VideoPlayer } from "@/components/learning/VideoPlayer";
 import { LessonSidebar } from "@/components/learning/LessonSidebar";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { ChevronLeft, ChevronRight, CheckCircle2, Menu, BookOpen, Loader2, Lock, Play, Download } from "lucide-react";
+import { ChevronLeft, ChevronRight, CheckCircle2, Menu, Loader2, Lock } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -352,25 +352,7 @@ export default function LearningClientView({ course }: LearningClientViewProps) 
                 </Button>
               </div>
 
-              {/* Resources */}
-              <div className="pt-4">
-                <h3 className="font-black text-xl tracking-tight mb-6 flex items-center gap-3">
-                  <BookOpen className="w-5 h-5 text-primary" />
-                  Encrypted Resources
-                </h3>
-                <div className="glass-card p-6 rounded-2xl flex items-center justify-between border border-white/5 bg-black/40 hover:bg-white/[0.02] transition-colors group">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-muted-foreground group-hover:text-primary group-hover:border-primary/20 transition-colors">
-                      <Download className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <p className="font-bold text-lg text-white group-hover:text-primary transition-colors">Lesson Protocol (PDF)</p>
-                      <p className="text-sm text-muted-foreground font-medium">Download the tactical summary for this module.</p>
-                    </div>
-                  </div>
-                  <Button variant="outline" size="sm" className="h-10 px-6 bg-transparent border-white/10 hover:bg-white/10 font-bold">Download</Button>
-                </div>
-              </div>
+
             </motion.div>
           </AnimatePresence>
         </div>
