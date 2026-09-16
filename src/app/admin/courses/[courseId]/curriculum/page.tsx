@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Plus, MoreVertical, Edit, Trash2, GripVertical, AlertCircle, PlayCircle, Eye, EyeOff, LayoutGrid, MoveUp, MoveDown, BookOpen, Layers, Clock, Tag, ChevronLeft, ChevronUp, ChevronDown, Video, UploadCloud, CheckCircle2, Settings, Save, PlaySquare, Film, Hash, Loader2 } from "lucide-react";
+import { Plus, MoreVertical, Edit, Trash2, GripVertical, AlertCircle, PlayCircle, Eye, EyeOff, LayoutGrid, MoveUp, MoveDown, BookOpen, Layers, Clock, Tag, ChevronLeft, ChevronUp, ChevronDown, Video, UploadCloud, CheckCircle2, Settings, Save, PlaySquare, Film, Hash, Loader2, Search } from "lucide-react";
 import Link from "next/link";
 import { 
   getCourseById, 
@@ -60,7 +60,33 @@ export default function CurriculumBuilderPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Mux existing video states
+  const [videoMode, setVideoMode] = useState<'UPLOAD' | 'EXISTING'>('UPLOAD');
+  const [existingVideos, setExistingVideos] = useState<any[]>([]);
+  const [videoSearchQuery, setVideoSearchQuery] = useState("");
+
+  const fetchExistingVideos = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/admin/videos', {
+        headers: { Authorization: `Bearer ${session?.access_token}` }
+      });
+      if (res.ok) {
+        setExistingVideos(await res.json());
+      }
+    } catch (err) {
+      console.error("Failed to fetch existing videos:", err);
+    }
+  };
+
   const isUploadActive = uploadState === 'UPLOADING' || uploadState === 'PROCESSING';
+
+  const formatDuration = (seconds: number) => {
+    if (!seconds) return "0:00";
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
 
 
   // Delete Dialog State
@@ -160,6 +186,8 @@ export default function CurriculumBuilderPage() {
     setUploadState('IDLE');
     setUploadProgress(0);
     setUploadError("");
+    setVideoMode('UPLOAD');
+    fetchExistingVideos();
     setLessonDialogOpen(true);
   };
 
@@ -675,42 +703,101 @@ export default function CurriculumBuilderPage() {
                     )}
                     {lessonData.video_provider === "mux" && (
                       <div className="space-y-4 pt-2">
-                        <input
-                          type="file"
-                          accept="video/mp4,video/quicktime,video/x-m4v,video/*"
-                          ref={fileInputRef}
-                          className="hidden"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) handleMuxUpload(file);
-                          }}
-                        />
-                        {uploadState === 'IDLE' || uploadState === 'READY' || uploadState === 'ERROR' ? (
-                          <Button
-                            variant="outline"
-                            onClick={() => fileInputRef.current?.click()}
-                            className="w-full h-12 bg-black/50 border-white/10 hover:bg-white/5 rounded-xl font-bold flex gap-2 items-center text-white"
+                        <div className="flex gap-2 mb-4 bg-black/50 p-1 rounded-xl border border-white/10">
+                          <Button 
+                            variant="ghost" 
+                            className={cn("flex-1 rounded-lg font-bold transition-all h-10", videoMode === 'UPLOAD' ? "bg-emerald-500/20 text-emerald-400" : "text-muted-foreground hover:text-white")}
+                            onClick={() => setVideoMode('UPLOAD')}
+                            type="button"
                           >
-                            <UploadCloud className="w-4 h-4" />
-                            {lessonData.video_id ? 'Replace Mux Asset' : 'Select Video File'}
+                            Upload New Video
                           </Button>
+                          <Button 
+                            variant="ghost" 
+                            className={cn("flex-1 rounded-lg font-bold transition-all h-10", videoMode === 'EXISTING' ? "bg-emerald-500/20 text-emerald-400" : "text-muted-foreground hover:text-white")}
+                            onClick={() => setVideoMode('EXISTING')}
+                            type="button"
+                          >
+                            Use Existing Video
+                          </Button>
+                        </div>
+
+                        {videoMode === 'UPLOAD' ? (
+                          <>
+                            <input
+                              type="file"
+                              accept="video/mp4,video/quicktime,video/x-m4v,video/*"
+                              ref={fileInputRef}
+                              className="hidden"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) handleMuxUpload(file);
+                              }}
+                            />
+                            {uploadState === 'IDLE' || uploadState === 'READY' || uploadState === 'ERROR' ? (
+                              <Button
+                                variant="outline"
+                                onClick={() => fileInputRef.current?.click()}
+                                className="w-full h-12 bg-black/50 border-white/10 hover:bg-white/5 rounded-xl font-bold flex gap-2 items-center text-white"
+                              >
+                                <UploadCloud className="w-4 h-4" />
+                                {lessonData.video_id ? 'Replace Mux Asset' : 'Select Video File'}
+                              </Button>
+                            ) : (
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-between text-xs font-bold text-white">
+                                  <span>{uploadState === 'UPLOADING' ? 'Uploading...' : 'Processing...'}</span>
+                                  <span>{uploadState === 'UPLOADING' ? `${uploadProgress}%` : <Loader2 className="w-3 h-3 animate-spin" />}</span>
+                                </div>
+                                <div className="h-2 bg-black/50 rounded-full overflow-hidden border border-white/5">
+                                  <div 
+                                    className="h-full bg-emerald-500 transition-all duration-300" 
+                                    style={{ width: uploadState === 'UPLOADING' ? `${uploadProgress}%` : '100%' }}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                            {uploadError && <p className="text-red-500 text-xs font-bold">{uploadError}</p>}
+                            {uploadState === 'READY' && <p className="text-emerald-500 text-xs font-bold">Video ready! Playback ID: {lessonData.video_id}</p>}
+                            {lessonData.video_id && uploadState === 'IDLE' && <p className="text-muted-foreground text-xs font-bold">Current Playback ID: {lessonData.video_id}</p>}
+                          </>
                         ) : (
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between text-xs font-bold text-white">
-                              <span>{uploadState === 'UPLOADING' ? 'Uploading...' : 'Processing...'}</span>
-                              <span>{uploadState === 'UPLOADING' ? `${uploadProgress}%` : <Loader2 className="w-3 h-3 animate-spin" />}</span>
-                            </div>
-                            <div className="h-2 bg-black/50 rounded-full overflow-hidden border border-white/5">
-                              <div 
-                                className="h-full bg-emerald-500 transition-all duration-300" 
-                                style={{ width: uploadState === 'UPLOADING' ? `${uploadProgress}%` : '100%' }}
+                          <div className="space-y-4">
+                            <div className="relative">
+                              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                              <Input 
+                                placeholder="Search existing videos..."
+                                className="pl-9 bg-black/50 border-white/10 h-10 rounded-xl text-sm focus:border-emerald-500 transition-colors"
+                                value={videoSearchQuery}
+                                onChange={(e) => setVideoSearchQuery(e.target.value)}
                               />
+                            </div>
+                            <div className="max-h-48 overflow-y-auto space-y-2 custom-scrollbar pr-2">
+                              {existingVideos.filter(v => v.lesson_title.toLowerCase().includes(videoSearchQuery.toLowerCase()) || v.video_id.toLowerCase().includes(videoSearchQuery.toLowerCase())).map(video => (
+                                <div 
+                                  key={video.video_id} 
+                                  className={cn("p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between", lessonData.video_id === video.video_id ? "bg-emerald-500/10 border-emerald-500/30" : "bg-black/40 border-white/5 hover:border-white/20")} 
+                                  onClick={() => {
+                                    setLessonData({...lessonData, video_id: video.video_id, video_asset_id: video.video_asset_id, duration: video.duration});
+                                    setUploadState('READY');
+                                  }}
+                                >
+                                  <div className="flex flex-col">
+                                    <span className="font-bold text-white text-sm line-clamp-1">{video.lesson_title}</span>
+                                    <span className="text-[10px] text-muted-foreground font-mono">ID: {video.video_id.substring(0,8)}...</span>
+                                    <span className="text-[10px] text-emerald-500 mt-1">{video.course_title} &gt; {video.module_title}</span>
+                                  </div>
+                                  <div className="text-xs font-mono text-muted-foreground bg-white/5 px-2 py-1 rounded border border-white/5 shrink-0 ml-2">
+                                    {formatDuration(video.duration)}
+                                  </div>
+                                </div>
+                              ))}
+                              {existingVideos.length === 0 && (
+                                <div className="text-center text-muted-foreground py-4 text-sm font-medium">No existing Mux videos found.</div>
+                              )}
                             </div>
                           </div>
                         )}
-                        {uploadError && <p className="text-red-500 text-xs font-bold">{uploadError}</p>}
-                        {uploadState === 'READY' && <p className="text-emerald-500 text-xs font-bold">Video ready! Playback ID: {lessonData.video_id}</p>}
-                        {lessonData.video_id && uploadState === 'IDLE' && <p className="text-muted-foreground text-xs font-bold">Current Playback ID: {lessonData.video_id}</p>}
                       </div>
                     )}
               </div>

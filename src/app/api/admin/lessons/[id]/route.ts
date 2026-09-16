@@ -176,11 +176,31 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         if (!existingLesson.video_asset_id) {
            warning = "Old Mux asset could not be deleted because video_asset_id was null. Asset was left untouched.";
         } else if (muxClient) {
-           try {
-             await muxClient.video.assets.delete(existingLesson.video_asset_id);
-           } catch (muxErr) {
-             console.error("Failed to delete old Mux asset:", muxErr);
-             warning = "Old Mux asset deletion failed.";
+           // SHARED-ASSET SAFETY: Check if any OTHER lesson uses the same video_id or video_asset_id
+           let orQuery = `video_asset_id.eq.${existingLesson.video_asset_id}`;
+           if (existingLesson.video_id) {
+             orQuery += `,video_id.eq.${existingLesson.video_id}`;
+           }
+
+           const { count, error: countError } = await supabaseAdmin
+             .from("lessons")
+             .select("id", { count: "exact", head: true })
+             .neq("id", id)
+             .or(orQuery);
+             
+           if (countError) {
+             console.error("Failed to check remaining Mux references:", countError);
+             warning = "Old Mux asset was left untouched due to reference check error.";
+           } else if (count && count > 0) {
+             // Other lessons still reference this video, do not delete from Mux
+             warning = "Old Mux asset was not deleted because it is shared with other lessons.";
+           } else {
+             try {
+               await muxClient.video.assets.delete(existingLesson.video_asset_id);
+             } catch (muxErr) {
+               console.error("Failed to delete old Mux asset:", muxErr);
+               warning = "Old Mux asset deletion failed.";
+             }
            }
         }
       }
@@ -246,11 +266,29 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
       if (!existingLesson.video_asset_id) {
         warning = "Mux asset could not be deleted because video_asset_id was null. Asset was left untouched.";
       } else if (muxClient) {
-        try {
-          await muxClient.video.assets.delete(existingLesson.video_asset_id);
-        } catch (muxErr) {
-          console.error("Failed to delete Mux asset:", muxErr);
-          warning = "Mux asset deletion failed.";
+        // SHARED-ASSET SAFETY: Check if any REMAINING lesson uses the same video_id or video_asset_id
+        let orQuery = `video_asset_id.eq.${existingLesson.video_asset_id}`;
+        if (existingLesson.video_id) {
+          orQuery += `,video_id.eq.${existingLesson.video_id}`;
+        }
+
+        const { count, error: countError } = await supabaseAdmin
+          .from("lessons")
+          .select("id", { count: "exact", head: true })
+          .or(orQuery);
+          
+        if (countError) {
+          console.error("Failed to check remaining Mux references:", countError);
+          warning = "Mux asset was left untouched due to reference check error.";
+        } else if (count && count > 0) {
+          warning = "Mux asset was not deleted because it is shared with other lessons.";
+        } else {
+          try {
+            await muxClient.video.assets.delete(existingLesson.video_asset_id);
+          } catch (muxErr) {
+            console.error("Failed to delete Mux asset:", muxErr);
+            warning = "Mux asset deletion failed.";
+          }
         }
       }
     }
