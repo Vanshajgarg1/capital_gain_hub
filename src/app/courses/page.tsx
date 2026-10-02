@@ -1,5 +1,5 @@
 import { CourseCard } from "@/components/public/CourseCard";
-import { getPublishedCourses } from "@/lib/api/courses";
+import { getPublishedCoursesWithContent } from "@/lib/api/courses";
 import { ScrollReveal } from "@/components/ui/animations/ScrollReveal";
 
 export const metadata = {
@@ -8,7 +8,7 @@ export const metadata = {
 };
 
 export default async function CoursesPage() {
-  const courses = await getPublishedCourses();
+  const courses = await getPublishedCoursesWithContent();
 
   return (
     <div className="pt-32 pb-32 relative overflow-hidden">

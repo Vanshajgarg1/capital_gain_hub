@@ -7,6 +7,27 @@ import { Button } from "@/components/ui/button";
 import { Clock, BookOpen, ArrowRight, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+function getCourseDuration(course: Course): string {
+  let totalSeconds = 0;
+  if (course.modules) {
+    for (const module of course.modules) {
+      if (module.lessons) {
+        for (const lesson of module.lessons) {
+          if (lesson.duration) {
+            totalSeconds += lesson.duration;
+          }
+        }
+      }
+    }
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes === 0) return "0m";
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
 interface CourseCardProps {
   course: Course;
 }
@@ -74,11 +95,11 @@ export function CourseCard({ course }: CourseCardProps) {
           <div className="flex flex-wrap items-center gap-4 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-8">
             <div className="flex items-center gap-2 bg-white/5 px-3 py-1.5 rounded-lg border border-white/5">
               <BookOpen className="w-4 h-4 text-primary" />
-              <span>{course.modules?.length || 5} Modules</span>
+              <span>{course.modules?.length ?? 0} Modules</span>
             </div>
             <div className="flex items-center gap-2 bg-white/5 px-3 py-1.5 rounded-lg border border-white/5">
               <Clock className="w-4 h-4 text-primary" />
-              <span>{course.duration}</span>
+              <span>{getCourseDuration(course)}</span>
             </div>
           </div>
           
