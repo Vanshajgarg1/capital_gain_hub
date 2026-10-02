@@ -28,6 +28,45 @@ export async function getPublishedCourses(): Promise<Course[] | null> {
 }
 
 /**
+ * Fetches all published and non-archived courses, including their modules and lessons.
+ */
+export async function getPublishedCoursesWithContent(): Promise<Course[] | null> {
+  try {
+    const { data, error } = await supabase
+      .from("courses")
+      .select("*, modules(*, lessons(*))")
+      .eq("is_published", true)
+      .eq("is_archived", false)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error fetching courses with content from Supabase:", error);
+      return null;
+    }
+
+    if (!data) return [];
+
+    // Sort modules and lessons based on order_index
+    const courses = data as Course[];
+    courses.forEach(course => {
+      if (course.modules) {
+        course.modules.sort((a: any, b: any) => a.order_index - b.order_index);
+        course.modules.forEach((module: any) => {
+          if (module.lessons) {
+            module.lessons.sort((a: any, b: any) => a.order_index - b.order_index);
+          }
+        });
+      }
+    });
+
+    return courses;
+  } catch (err) {
+    console.error("Failed to fetch courses with content:", err);
+    return null;
+  }
+}
+
+/**
  * Fetches all courses regardless of status. Used by admin.
  */
 export async function getAllCourses(): Promise<Course[]> {

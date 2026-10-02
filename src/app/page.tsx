@@ -2,7 +2,7 @@ import { HeroSection } from "@/components/public/HeroSection";
 import { YoutubeSection } from "@/components/public/youtube-section";
 import { CourseCard } from "@/components/public/CourseCard";
 import { PricingCard } from "@/components/public/PricingCard";
-import { getPublishedCourses } from "@/lib/api/courses";
+import { getPublishedCoursesWithContent } from "@/lib/api/courses";
 import { supabase } from "@/lib/supabase";
 import { createClient } from "@supabase/supabase-js";
 
@@ -33,7 +33,7 @@ export const revalidate = 0;
 
 export default async function Home() {
   const [courses, { data: testimonialsData }, { data: faqsData }, cmsPage, studentData, lessonData] = await Promise.all([
-    getPublishedCourses(),
+    getPublishedCoursesWithContent(),
     supabase
       .from("testimonials")
       .select("*")

@@ -6,6 +6,27 @@ import { Course } from "@/types";
 import { cn } from "@/lib/utils";
 import { CinematicVideo } from "@/components/public/CinematicVideo";
 
+function getCourseDuration(course: Course): string {
+  let totalSeconds = 0;
+  if (course.modules) {
+    for (const module of course.modules) {
+      if (module.lessons) {
+        for (const lesson of module.lessons) {
+          if (lesson.duration) {
+            totalSeconds += lesson.duration;
+          }
+        }
+      }
+    }
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes === 0) return "0m";
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
 interface PricingCardProps {
   course: Course;
   isFeatured?: boolean;
@@ -72,14 +93,12 @@ export function PricingCard({ course, isFeatured }: PricingCardProps) {
         <ul className="space-y-4">
           <li className="flex items-start gap-3">
             <BookOpen className="h-5 w-5 text-primary shrink-0 mt-0.5" />
-            <span className="text-sm text-foreground/90 font-medium">{course.modules?.length || 5} Detailed Modules</span>
+            <span className="text-sm text-foreground/90 font-medium">{course.modules?.length ?? 0} Detailed Modules</span>
           </li>
-          {course.duration && (
-            <li className="flex items-start gap-3">
-              <Clock className="h-5 w-5 text-primary shrink-0 mt-0.5" />
-              <span className="text-sm text-foreground/90 font-medium">{course.duration} of Video Content</span>
-            </li>
-          )}
+          <li className="flex items-start gap-3">
+            <Clock className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+            <span className="text-sm text-foreground/90 font-medium">{getCourseDuration(course)} of Video Content</span>
+          </li>
           <li className="flex items-start gap-3">
             <CheckCircle2 className="h-5 w-5 text-primary shrink-0 mt-0.5" />
             <span className="text-sm text-foreground/90 font-medium">Lifetime Access & Updates</span>
