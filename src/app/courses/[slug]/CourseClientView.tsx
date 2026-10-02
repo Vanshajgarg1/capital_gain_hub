@@ -335,7 +335,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
                   
                   <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground pt-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                    <span>30-Day Money-Back Guarantee</span>
+                    <span>Refunds subject to our Refund Policy</span>
                   </div>
                 </div>
               </div>
