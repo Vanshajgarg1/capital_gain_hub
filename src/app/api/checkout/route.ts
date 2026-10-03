@@ -5,7 +5,18 @@ import Razorpay from "razorpay";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { course_id } = body;
+    const { course_id, utm } = body;
+
+    // Sanitize UTM params (only allow known keys, string values, max 256 chars)
+    const utmNotes: Record<string, string> = {};
+    if (utm && typeof utm === "object") {
+      const allowedKeys = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"];
+      for (const key of allowedKeys) {
+        if (typeof utm[key] === "string" && utm[key].length > 0) {
+          utmNotes[key] = utm[key].slice(0, 256);
+        }
+      }
+    }
 
     if (!course_id) {
       return NextResponse.json({ error: "course_id is required" }, { status: 400 });
@@ -139,6 +150,7 @@ export async function POST(request: Request) {
               amount: amount_paise,
               currency: "INR",
               receipt: pendingOrder.id,
+              ...(Object.keys(utmNotes).length > 0 ? { notes: utmNotes } : {}),
             });
 
             await supabaseAdmin
@@ -201,6 +213,7 @@ export async function POST(request: Request) {
         amount: amount_paise,
         currency: "INR",
         receipt: newOrder.id,
+        ...(Object.keys(utmNotes).length > 0 ? { notes: utmNotes } : {}),
       });
       rzpOrderId = rzpOrder.id;
     } catch (rzpErr: any) {

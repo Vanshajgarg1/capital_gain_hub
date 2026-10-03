@@ -65,6 +65,14 @@ export default function RegisterPage() {
       // 1. The frontend lacks INSERT permissions (RLS/Grants block it, returning 401/403).
       // 2. The database already has a trigger 'on_auth_user_created' that securely creates the profile.
 
+      // GA4: Track successful sign_up (fires only after Supabase confirms user creation)
+      if (typeof window !== "undefined" && typeof window.gtag === "function") {
+        console.log("[GA4] sign_up firing");
+        window.gtag("event", "sign_up", {
+          method: "email",
+        });
+      }
+
       if (data.session) {
         // If an active session is immediately returned, redirect to dashboard
         router.push("/dashboard");

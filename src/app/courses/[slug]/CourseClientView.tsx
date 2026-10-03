@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import Script from "next/script";
 import { useRouter } from "next/navigation";
@@ -8,6 +8,7 @@ import { Course } from "@/types";
 import { useAuth } from "@/contexts/AuthContext";
 import { getEnrollment } from "@/lib/api/courses";
 import { supabase } from "@/lib/supabase";
+import { getStoredUtmParams } from "@/lib/utm";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Clock, BookOpen, User, PlayCircle, Lock, Loader2, CheckCircle2, ChevronDown, Sparkles, X } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -28,6 +29,43 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [enrollmentCheckLoading, setEnrollmentCheckLoading] = useState(true);
   const [previewLesson, setPreviewLesson] = useState<any>(null);
+
+  const lastTrackedCourseId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (lastTrackedCourseId.current === course.id) return;
+
+    const trackViewItem = () => {
+      window.gtag("event", "view_item", {
+        currency: "INR",
+        value: Number(course.price),
+        items: [
+          {
+            item_id: course.id,
+            item_name: course.title,
+            price: Number(course.price),
+            quantity: 1,
+          },
+        ],
+      });
+      lastTrackedCourseId.current = course.id;
+    };
+
+    if (typeof window.gtag === "function") {
+      trackViewItem();
+      return;
+    }
+
+    const interval = setInterval(() => {
+      if (typeof window.gtag === "function") {
+        trackViewItem();
+        clearInterval(interval);
+      }
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, [course.id, course.title, course.price]);
 
   useEffect(() => {
     async function checkEnrollment() {
@@ -92,13 +130,29 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
         setIsEnrolled(true);
         router.push(`/dashboard/courses/${course.id}`);
       } else {
+        console.log("[GA4] begin_checkout firing");
+        if (typeof window !== "undefined" && typeof window.gtag === "function") {
+          window.gtag("event", "begin_checkout", {
+            currency: "INR",
+            value: Number(course.price),
+            items: [
+              {
+                item_id: course.id,
+                item_name: course.title,
+                price: Number(course.price),
+                quantity: 1,
+              },
+            ],
+          });
+        }
+
         const checkoutRes = await fetch("/api/checkout", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${session.access_token}`,
           },
-          body: JSON.stringify({ course_id: course.id }),
+          body: JSON.stringify({ course_id: course.id, utm: getStoredUtmParams() }),
         });
 
         const checkoutData = await checkoutRes.json();
@@ -141,6 +195,28 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
               const verifyData = await verifyRes.json();
               if (!verifyRes.ok) {
                 throw new Error(verifyData.error || "Payment verification failed");
+              }
+
+              // GA4: Track successful purchase (fires only after backend verification succeeds)
+              if (typeof window !== "undefined" && typeof window.gtag === "function") {
+                const transaction_id = response.razorpay_payment_id;
+                console.log("[GA4] purchase firing", {
+                  transaction_id,
+                  course_id: course.id,
+                });
+                window.gtag("event", "purchase", {
+                  transaction_id,
+                  value: Number(course.price),
+                  currency: "INR",
+                  items: [
+                    {
+                      item_id: course.id,
+                      item_name: course.title,
+                      price: Number(course.price),
+                      quantity: 1,
+                    },
+                  ],
+                });
               }
               
               setIsEnrolled(true);

@@ -42,6 +42,15 @@ export default function LoginPage() {
       if (event === 'SIGNED_IN' && session) {
         setSuccess(true);
 
+        // GA4: Track successful login
+        if (typeof window !== "undefined" && typeof window.gtag === "function") {
+          console.log("[GA4] login firing");
+          const method = session.user.app_metadata?.provider === "google" ? "google" : "email";
+          window.gtag("event", "login", {
+            method,
+          });
+        }
+
         // Fetch profile to redirect based on role
         const { data: profile } = await supabase
           .from("profiles")
