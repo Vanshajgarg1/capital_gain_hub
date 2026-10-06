@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import Razorpay from "razorpay";
+import crypto from "crypto";
 
 export async function POST(request: Request) {
   try {
@@ -87,6 +88,7 @@ export async function POST(request: Request) {
     });
 
     const amount_paise = Math.round(Number(course.price) * 100);
+    const currentCoursePrice = Number(course.price);
 
     // ──────────────────────────────────────────────
     // 5. EXISTING ENROLLMENT CHECK
@@ -96,7 +98,7 @@ export async function POST(request: Request) {
       .select("id")
       .eq("user_id", user.id)
       .eq("course_id", course_id)
-      .single();
+      .maybeSingle();
 
     if (existingEnrollment) {
       return NextResponse.json({ error: "ALREADY_ENROLLED" }, { status: 409 });
@@ -105,139 +107,201 @@ export async function POST(request: Request) {
     // ──────────────────────────────────────────────
     // 6. EXISTING ORDER / IDEMPOTENCY CHECK
     // ──────────────────────────────────────────────
-    const { data: existingOrders } = await supabaseAdmin
+    const { data: existingOrders, error: ordersError } = await supabaseAdmin
       .from("orders")
       .select("id, course_id, amount, status, created_at, gateway_order_id")
       .eq("user_id", user.id)
       .eq("course_id", course_id)
-      .in("status", ["PENDING", "COMPLETED"]);
+      .order("created_at", { ascending: false });
+
+    if (ordersError) {
+      console.error("[Diagnostics] Error fetching existing orders:", ordersError);
+    }
 
     if (existingOrders && existingOrders.length > 0) {
+      // 6.1 Check if an order is already COMPLETED
       const completedOrder = existingOrders.find((o) => o.status === "COMPLETED");
       if (completedOrder) {
+        // User already purchased this course. Self-heal enrollment if missing.
+        const { error: healError } = await supabaseAdmin
+          .from("enrollments")
+          .insert({
+            user_id: user.id,
+            course_id: course_id,
+          });
+
+        if (healError && healError.code !== "23505") {
+          console.error("[Diagnostics] Failed to heal enrollment for completed order:", healError);
+        }
+
         return NextResponse.json(
           {
-            error: "ORDER_COMPLETED_BUT_NOT_ENROLLED",
+            error: "ALREADY_ENROLLED",
             order_id: completedOrder.id,
           },
           { status: 409 }
         );
       }
 
-      const pendingOrder = existingOrders.find((o) => o.status === "PENDING");
-      if (pendingOrder) {
-        if (pendingOrder.gateway_order_id) {
-          // Reuse existing Razorpay order
-          return NextResponse.json(
-            {
-              success: true,
-              existing: true,
-              razorpay_key_id: razorpayKeyId,
-              order: {
-                id: pendingOrder.id,
-                course_id: pendingOrder.course_id,
-                amount: Number(pendingOrder.amount),
-                status: pendingOrder.status,
-                gateway_order_id: pendingOrder.gateway_order_id,
-              },
-            },
-            { status: 200 }
-          );
-        } else {
-          // Missing gateway_order_id on existing PENDING order. Create Razorpay order and update local order.
-          try {
-            const rzpOrder = await razorpay.orders.create({
-              amount: amount_paise,
-              currency: "INR",
-              receipt: pendingOrder.id,
-              ...(Object.keys(utmNotes).length > 0 ? { notes: utmNotes } : {}),
-            });
+      // 6.2 Inspect all PENDING orders (from newest to oldest)
+      const pendingOrders = existingOrders.filter((o) => o.status === "PENDING");
+      let reusableOrder = null;
 
+      for (const pendingOrder of pendingOrders) {
+        if (pendingOrder.gateway_order_id) {
+          try {
+            const rzpOrder = await razorpay.orders.fetch(pendingOrder.gateway_order_id);
+
+            // Check if user already paid this order on Razorpay
+            const isPaid = Boolean(
+              rzpOrder && (
+                rzpOrder.status === "paid" ||
+                (typeof rzpOrder.amount_paid === "number" && rzpOrder.amount_paid > 0)
+              )
+            );
+
+            if (isPaid) {
+              // Order was paid on Razorpay! Complete it and enroll immediately.
+              console.log(`[Diagnostics] Razorpay order ${pendingOrder.gateway_order_id} is already paid. Fulfilling order ${pendingOrder.id}`);
+
+              await supabaseAdmin
+                .from("orders")
+                .update({ status: "COMPLETED" })
+                .eq("id", pendingOrder.id);
+
+              try {
+                const paymentsList = await razorpay.orders.fetchPayments(pendingOrder.gateway_order_id);
+                const successfulPayment = paymentsList?.items?.find(
+                  (p: any) => p.status === "captured" || p.status === "authorized"
+                );
+                if (successfulPayment) {
+                  await supabaseAdmin.from("payments").insert({
+                    order_id: pendingOrder.id,
+                    amount: Number(pendingOrder.amount),
+                    status: "SUCCESS",
+                    payment_method: successfulPayment.method || "razorpay",
+                    gateway_payment_id: successfulPayment.id,
+                    gateway_signature: null,
+                  });
+                }
+              } catch (payFetchErr: any) {
+                console.warn("[Diagnostics] Failed fetching payment details for paid order:", payFetchErr?.message || payFetchErr);
+              }
+
+              const { error: enrollError } = await supabaseAdmin
+                .from("enrollments")
+                .insert({
+                  user_id: user.id,
+                  course_id: course_id,
+                });
+
+              if (enrollError && enrollError.code !== "23505") {
+                console.error("[Diagnostics] Enrollment creation error for paid order:", enrollError);
+              }
+
+              return NextResponse.json(
+                {
+                  error: "ALREADY_ENROLLED",
+                  order_id: pendingOrder.id,
+                },
+                { status: 409 }
+              );
+            }
+
+            // Unpaid Razorpay order: check if amount and currency match current course price
+            const isAmountMatch = (
+              Number(pendingOrder.amount) === currentCoursePrice &&
+              rzpOrder.amount === amount_paise &&
+              rzpOrder.currency === "INR"
+            );
+
+            if (isAmountMatch && !reusableOrder) {
+              reusableOrder = pendingOrder;
+            } else {
+              // Amount differs from current course price (or older duplicate pending order).
+              // Mark CANCELLED to preserve history while preventing reuse.
+              console.log(`[Diagnostics] Cancelling stale pending order ${pendingOrder.id}: local amount ${pendingOrder.amount}, current course price ${currentCoursePrice}`);
+              await supabaseAdmin
+                .from("orders")
+                .update({ status: "CANCELLED" })
+                .eq("id", pendingOrder.id);
+            }
+          } catch (fetchErr: any) {
+            console.warn(`[Diagnostics] Razorpay order fetch failed for ${pendingOrder.gateway_order_id}:`, fetchErr?.message || fetchErr);
+            // Stale or invalid Razorpay order id; cancel local pending order
             await supabaseAdmin
               .from("orders")
-              .update({ gateway_order_id: rzpOrder.id })
+              .update({ status: "CANCELLED" })
               .eq("id", pendingOrder.id);
-
-            return NextResponse.json(
-              {
-                success: true,
-                existing: true,
-                razorpay_key_id: razorpayKeyId,
-                order: {
-                  id: pendingOrder.id,
-                  course_id: pendingOrder.course_id,
-                  amount: Number(pendingOrder.amount),
-                  status: pendingOrder.status,
-                  gateway_order_id: rzpOrder.id,
-                },
-              },
-              { status: 200 }
-            );
-          } catch (rzpErr: any) {
-            console.error("[Diagnostics] Razorpay order recovery failed:", {
-              error: rzpErr?.message || String(rzpErr),
-              statusCode: rzpErr?.statusCode,
-              amount: amount_paise,
-              currency: "INR",
-              keyIdPrefix: razorpayKeyId?.substring(0, 8)
-            });
-            return NextResponse.json({ error: "Failed to create payment session" }, { status: 500 });
           }
+        } else {
+          // Pending order without gateway_order_id; cancel it safely
+          await supabaseAdmin
+            .from("orders")
+            .update({ status: "CANCELLED" })
+            .eq("id", pendingOrder.id);
         }
+      }
+
+      // If a valid pending order with matching current price exists, reuse it
+      if (reusableOrder) {
+        return NextResponse.json(
+          {
+            success: true,
+            existing: true,
+            razorpay_key_id: razorpayKeyId,
+            order: {
+              id: reusableOrder.id,
+              course_id: reusableOrder.course_id,
+              amount: Number(reusableOrder.amount),
+              status: reusableOrder.status,
+              gateway_order_id: reusableOrder.gateway_order_id,
+            },
+          },
+          { status: 200 }
+        );
       }
     }
 
     // ──────────────────────────────────────────────
-    // 7. CREATE NEW PENDING ORDER
+    // 7. CREATE NEW PENDING ORDER (AT CURRENT PRICE)
     // ──────────────────────────────────────────────
-    const { data: newOrder, error: insertError } = await supabaseAdmin
-      .from("orders")
-      .insert({
-        user_id: user.id,
-        course_id: course_id,
-        amount: Number(course.price),
-        status: "PENDING",
-      })
-      .select("id, course_id, amount, status")
-      .single();
-
-    if (insertError || !newOrder) {
-      console.error("Error creating order:", insertError);
-      return NextResponse.json({ error: "Failed to create order" }, { status: 500 });
-    }
-
-    // Create Razorpay order
-    let rzpOrderId = null;
+    const orderId = crypto.randomUUID();
+    let rzpOrder;
     try {
-      const rzpOrder = await razorpay.orders.create({
+      rzpOrder = await razorpay.orders.create({
         amount: amount_paise,
         currency: "INR",
-        receipt: newOrder.id,
+        receipt: orderId,
         ...(Object.keys(utmNotes).length > 0 ? { notes: utmNotes } : {}),
       });
-      rzpOrderId = rzpOrder.id;
     } catch (rzpErr: any) {
       console.error("[Diagnostics] Razorpay order creation failed:", {
         error: rzpErr?.message || String(rzpErr),
         statusCode: rzpErr?.statusCode,
         amount: amount_paise,
         currency: "INR",
-        keyIdPrefix: razorpayKeyId?.substring(0, 8)
+        keyIdPrefix: razorpayKeyId?.substring(0, 8),
       });
       return NextResponse.json({ error: "Failed to create payment session" }, { status: 500 });
     }
 
-    // Update local order with gateway_order_id
-    const { error: updateError } = await supabaseAdmin
+    const { data: newOrder, error: insertError } = await supabaseAdmin
       .from("orders")
-      .update({ gateway_order_id: rzpOrderId })
-      .eq("id", newOrder.id);
+      .insert({
+        id: orderId,
+        user_id: user.id,
+        course_id: course_id,
+        amount: currentCoursePrice,
+        status: "PENDING",
+        gateway_order_id: rzpOrder.id,
+      })
+      .select("id, course_id, amount, status, gateway_order_id")
+      .single();
 
-    if (updateError) {
-      console.error("Failed to update order with gateway_order_id:", updateError);
-      // We still have the Razorpay order and the local order.
-      // Next time the user tries, the "EXISTING ORDER" flow will handle it.
-      return NextResponse.json({ error: "Failed to initialize payment" }, { status: 500 });
+    if (insertError || !newOrder) {
+      console.error("[Diagnostics] Error creating order in DB:", insertError);
+      return NextResponse.json({ error: "Failed to create order" }, { status: 500 });
     }
 
     return NextResponse.json(
@@ -249,13 +313,13 @@ export async function POST(request: Request) {
           course_id: newOrder.course_id,
           amount: Number(newOrder.amount),
           status: newOrder.status,
-          gateway_order_id: rzpOrderId,
+          gateway_order_id: newOrder.gateway_order_id,
         },
       },
       { status: 201 }
     );
   } catch (err: any) {
-    console.error("Checkout error:", err);
+    console.error("[Diagnostics] Checkout error:", err?.message || err);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
