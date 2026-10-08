@@ -5,6 +5,9 @@ import Razorpay from "razorpay";
 import crypto from "crypto";
 
 export async function POST(request: Request) {
+  const reqId = crypto.randomUUID();
+  console.log(`[Checkout:${reqId}] Starting checkout request`);
+
   try {
     const body = await request.json();
     const { course_id, utm } = body;
@@ -239,21 +242,76 @@ export async function POST(request: Request) {
         );
       } catch (fetchError: any) {
         console.error(
-          "[Checkout] Could not verify existing Razorpay order:",
+          `[Checkout:${reqId}] Could not verify existing Razorpay order:`,
           {
+            courseId: course_id,
             localOrderId: pendingOrder.id,
             gatewayStatus: fetchError?.statusCode,
-            message: fetchError?.message,
+            errorCode: fetchError?.error?.code,
+            description: fetchError?.error?.description,
+            reason: fetchError?.error?.reason,
           }
         );
 
-        // A fetch failure is not proof that the gateway order is invalid.
-        // Keep the existing order PENDING and avoid creating duplicates.
+        const isMissingOrder =
+          fetchError?.statusCode === 400 &&
+          fetchError?.error?.code === "BAD_REQUEST_ERROR" &&
+          typeof fetchError?.error?.description === "string" &&
+          fetchError.error.description.includes("does not exist");
+
+        if (isMissingOrder) {
+          // Check if there are any local payment records before cancelling.
+          const { data: existingPayments, error: paymentsError } = await supabaseAdmin
+            .from("payments")
+            .select("id")
+            .eq("order_id", pendingOrder.id)
+            .limit(1);
+
+          if (paymentsError) {
+            console.error(`[Checkout:${reqId}] Failed to check payments for missing order`, paymentsError);
+            return NextResponse.json(
+              { error: "PAYMENT_SESSION_STALE" },
+              { status: 503 }
+            );
+          }
+
+          if (existingPayments && existingPayments.length > 0) {
+            console.log(`[Checkout:${reqId}] Cannot cancel missing order because local payments exist`, existingPayments);
+            return NextResponse.json(
+              { error: "PAYMENT_SESSION_STALE" },
+              { status: 503 }
+            );
+          }
+
+          console.log(`[Checkout:${reqId}] Cancelling stale local order due to confirmed missing gateway order`, {
+            courseId: course_id,
+            localOrderId: pendingOrder.id,
+            gatewayOrderId: pendingOrder.gateway_order_id,
+          });
+
+          const { error: cancelError } = await supabaseAdmin
+            .from("orders")
+            .update({ status: "CANCELLED" })
+            .eq("id", pendingOrder.id);
+
+          if (cancelError) {
+            console.error(`[Checkout:${reqId}] Failed to cancel stale local order`, cancelError);
+            return NextResponse.json(
+              { error: "PAYMENT_SESSION_STALE" },
+              { status: 503 }
+            );
+          }
+
+          continue; // Successfully cancelled, move on to create a new order
+        }
+
+        // A fetch failure (even "does not exist" if not confidently matched above) is not proof that the gateway order is invalid
+        // or that it is safe to create a replacement. Keep the existing order PENDING.
         return NextResponse.json(
           {
             error: "PAYMENT_GATEWAY_UNAVAILABLE",
             message:
-              "Unable to verify your existing payment session. Please retry shortly.",
+              "Unable to verify your existing payment session. Please retry shortly or contact support.",
           },
           { status: 503 }
         );
@@ -308,7 +366,8 @@ export async function POST(request: Request) {
         rzpOrder.currency === "INR";
 
       if (!amountMatches) {
-        console.error("[Checkout] Existing order price mismatch:", {
+        console.error(`[Checkout:${reqId}] Existing order price mismatch:`, {
+          courseId: course_id,
           localOrderId: pendingOrder.id,
           localAmount,
           expectedAmountPaise: amountPaise,
@@ -316,21 +375,78 @@ export async function POST(request: Request) {
           gatewayCurrency: rzpOrder.currency,
         });
 
-        // The old gateway order may still be payable. Do not cancel it
-        // locally and create another order without resolving that risk.
-        return NextResponse.json(
-          {
-            error: "EXISTING_ORDER_PRICE_MISMATCH",
-            message:
-              "An existing payment session has a different amount. Please contact support before making another payment.",
-            order_id: pendingOrder.id,
-          },
-          { status: 409 }
-        );
+        // 1. Check if there are any local payment records for this order.
+        const { data: existingPayments, error: paymentsError } = await supabaseAdmin
+          .from("payments")
+          .select("id, status")
+          .eq("order_id", pendingOrder.id);
+
+        if (paymentsError) {
+          console.error(`[Checkout:${reqId}] Failed to check payments for mismatched order`, paymentsError);
+          return NextResponse.json(
+            { error: "EXISTING_ORDER_PRICE_MISMATCH", message: "Please contact support." },
+            { status: 500 }
+          );
+        }
+
+        // 2. Handle differently depending on whether a payment record exists.
+        if (existingPayments && existingPayments.length > 0) {
+          console.log(`[Checkout:${reqId}] Cannot cancel mismatched order because payment records exist`, existingPayments);
+          return NextResponse.json(
+            {
+              error: "EXISTING_ORDER_PRICE_MISMATCH",
+              message: "Your existing checkout session has a different price and payment attempts exist. Please contact support.",
+              order_id: pendingOrder.id,
+            },
+            { status: 409 }
+          );
+        }
+
+        // 3. The order is genuinely unpaid on Razorpay AND has no local payment attempts. Safe to cancel.
+        console.log(`[Checkout:${reqId}] Cancelling stale mismatched order (no payments found)`, {
+           localOrderId: pendingOrder.id,
+        });
+
+        const { data: cancelledOrder, error: cancelError } = await supabaseAdmin
+          .from("orders")
+          .update({ status: "CANCELLED" })
+          .eq("id", pendingOrder.id)
+          .eq("status", "PENDING")
+          .select("id")
+          .maybeSingle();
+
+        if (cancelError) {
+          console.error(`[Checkout:${reqId}] Failed to cancel stale mismatched order`, cancelError);
+          return NextResponse.json(
+            { error: "EXISTING_ORDER_PRICE_MISMATCH", message: "Please contact support." },
+            { status: 500 }
+          );
+        }
+
+        if (!cancelledOrder) {
+          console.warn(`[Checkout:${reqId}] Mismatched order was no longer PENDING, aborting cancellation`, pendingOrder.id);
+          return NextResponse.json(
+            {
+              error: "CONCURRENT_CHECKOUT",
+              message: "Another checkout process is running. Please retry.",
+            },
+            { status: 409 }
+          );
+        }
+
+        // Successfully cancelled. Continue loop to check other orders or fall through to create a replacement.
+        continue;
       }
 
       // Reuse the verified order. Local amounts are stored in rupees;
       // Razorpay amounts are in paise.
+      console.log(`[Checkout:${reqId}] Reusing existing pending order`, {
+        courseId: course_id,
+        localOrderId: pendingOrder.id,
+        gatewayOrderId: pendingOrder.gateway_order_id,
+        amount: localAmount
+      });
+
       return NextResponse.json(
         {
           success: true,
@@ -420,7 +536,18 @@ export async function POST(request: Request) {
       .single();
 
     if (insertError || !newOrder) {
-      console.error("[Checkout] Failed to persist local order:", {
+      if (insertError?.code === "23505") {
+        console.error(`[Checkout:${reqId}] Concurrent checkout detected, aborting duplicate:`, insertError);
+        return NextResponse.json(
+          {
+            error: "CONCURRENT_CHECKOUT",
+            message: "Another checkout process is running. Please retry.",
+          },
+          { status: 409 }
+        );
+      }
+
+      console.error(`[Checkout:${reqId}] Failed to persist local order:`, {
         message: insertError?.message,
         code: insertError?.code,
         gatewayOrderId: rzpOrder.id,
@@ -439,6 +566,13 @@ export async function POST(request: Request) {
       );
     }
 
+    console.log(`[Checkout:${reqId}] Created new gateway order`, {
+      courseId: course_id,
+      localOrderId: newOrder.id,
+      gatewayOrderId: newOrder.gateway_order_id,
+      amount: Number(newOrder.amount)
+    });
+
     return NextResponse.json(
       {
         success: true,
@@ -455,7 +589,7 @@ export async function POST(request: Request) {
     );
   } catch (error: any) {
     console.error(
-      "[Checkout] Unexpected checkout error:",
+      `[Checkout:${reqId}] Unexpected checkout error:`,
       error?.message || error
     );
 

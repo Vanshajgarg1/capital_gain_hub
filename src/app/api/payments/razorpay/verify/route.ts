@@ -100,56 +100,103 @@ export async function POST(request: Request) {
     // ──────────────────────────────────────────────
     // 5. IDEMPOTENCY CHECKS
     // ──────────────────────────────────────────────
-    const { data: existingPayment } = await supabaseAdmin
-      .from("payments")
-      .select("id")
-      .eq("gateway_payment_id", razorpay_payment_id)
-      .maybeSingle();
-
-    if (existingPayment || order.status === "COMPLETED") {
-      // Payment already processed (e.g. by webhook or prior verify request)
-      const { data: existingEnrollment } = await supabaseAdmin
-        .from("enrollments")
-        .select("id")
-        .eq("user_id", user.id)
-        .eq("course_id", order.course_id)
+    const { data: existingPayment, error: existingPaymentError } =
+      await supabaseAdmin
+        .from("payments")
+        .select("id, status, order_id, amount")
+        .eq("gateway_payment_id", razorpay_payment_id)
         .maybeSingle();
 
-      if (!existingEnrollment) {
-        await supabaseAdmin.from("enrollments").insert({
-          user_id: user.id,
-          course_id: order.course_id,
-        });
-      }
-
-      return NextResponse.json({ success: true, message: "Already processed" }, { status: 200 });
+    if (existingPaymentError) {
+      console.error("[Diagnostics] Payment lookup failed:", existingPaymentError);
+      return NextResponse.json({ error: "Payment lookup failed" }, { status: 500 });
     }
 
-    if (order.status !== "PENDING") {
+    if (existingPayment && existingPayment.order_id !== order.id) {
+      return NextResponse.json(
+        { error: "Payment does not belong to this order" },
+        { status: 400 }
+      );
+    }
+
+    if (existingPayment?.status === "REFUNDED") {
+      return NextResponse.json(
+        { error: "Refunded payment cannot grant enrollment" },
+        { status: 409 }
+      );
+    }
+
+    if (order.status !== "PENDING" && order.status !== "COMPLETED") {
       return NextResponse.json({ error: "Order cannot be fulfilled" }, { status: 400 });
+    }
+
+    if (existingPayment?.status === "SUCCESS") {
+      // Ensure we don't grant enrollment for a mismatched payment that was
+      // logged by the webhook for reconciliation but skipped enrollment.
+      if (Number(existingPayment.amount) !== Number(order.amount)) {
+        return NextResponse.json({ error: "Payment amount mismatch" }, { status: 400 });
+      }
+
+      if (order.status !== "COMPLETED") {
+        const { data: updatedOrder, error: orderUpdateError } = await supabaseAdmin
+          .from("orders")
+          .update({ status: "COMPLETED" })
+          .eq("id", order.id)
+          .select("id")
+          .single();
+
+        if (orderUpdateError || !updatedOrder) {
+          console.error("[Diagnostics] Order recovery failed:", orderUpdateError);
+          return NextResponse.json({ error: "Order recovery failed" }, { status: 500 });
+        }
+      }
+
+      const { data: existingEnrollment, error: enrollmentLookupError } =
+        await supabaseAdmin
+          .from("enrollments")
+          .select("id")
+          .eq("user_id", order.user_id)
+          .eq("course_id", order.course_id)
+          .maybeSingle();
+
+      if (enrollmentLookupError) {
+        console.error("[Diagnostics] Enrollment lookup failed:", enrollmentLookupError);
+        return NextResponse.json({ error: "Enrollment lookup failed" }, { status: 500 });
+      }
+
+      if (!existingEnrollment) {
+        const { error: enrollmentInsertError } = await supabaseAdmin
+          .from("enrollments")
+          .insert({
+            user_id: order.user_id,
+            course_id: order.course_id,
+          });
+
+        if (enrollmentInsertError && enrollmentInsertError.code !== "23505") {
+          console.error("[Diagnostics] Enrollment recovery failed:", enrollmentInsertError);
+          return NextResponse.json({ error: "Enrollment recovery failed" }, { status: 500 });
+        }
+      }
+
+      return NextResponse.json(
+        { success: true, message: "Already processed" },
+        { status: 200 }
+      );
+    }
+
+    if (order.status === "COMPLETED" && !existingPayment) {
+      return NextResponse.json(
+        { error: "Completed order needs payment reconciliation" },
+        { status: 409 }
+      );
     }
 
     // ──────────────────────────────────────────────
     // 6. AUTHORITATIVE COURSE & AMOUNT VERIFICATION
     // ──────────────────────────────────────────────
-    const { data: course, error: courseError } = await supabaseAdmin
-      .from("courses")
-      .select("id, price")
-      .eq("id", order.course_id)
-      .single();
-
-    if (courseError || !course) {
-      return NextResponse.json({ error: "Course not found" }, { status: 404 });
-    }
-
-    const expectedAmountPaise = Math.round(Number(course.price) * 100);
-    const localOrderAmountPaise = Math.round(Number(order.amount) * 100);
-
-    // Verify order amount matches authoritative course price
-    if (localOrderAmountPaise !== expectedAmountPaise) {
-      console.error(`[Diagnostics] Stale order price: Order ${localOrderAmountPaise} vs Course ${expectedAmountPaise}`);
-      return NextResponse.json({ error: "Order amount mismatch with current course price" }, { status: 400 });
-    }
+    // We verify the payment amount against the order amount (the price at the time of checkout),
+    // not the current course price. Otherwise, price changes would break pending checkouts.
+    const expectedAmountPaise = Math.round(Number(order.amount) * 100);
 
     // ──────────────────────────────────────────────
     // 7. RAZORPAY ORDER VERIFICATION
@@ -157,8 +204,8 @@ export async function POST(request: Request) {
     let rzpOrder;
     try {
       rzpOrder = await razorpay.orders.fetch(razorpay_order_id);
-    } catch (rzpOrderErr: any) {
-      console.error("[Diagnostics] Failed to fetch Razorpay order:", rzpOrderErr?.message || rzpOrderErr);
+    } catch (rzpOrderErr: unknown) {
+      console.error("[Diagnostics] Failed to fetch Razorpay order:", rzpOrderErr instanceof Error ? rzpOrderErr.message : rzpOrderErr);
       return NextResponse.json({ error: "Invalid Razorpay order" }, { status: 400 });
     }
 
@@ -182,8 +229,8 @@ export async function POST(request: Request) {
     let rzpPayment;
     try {
       rzpPayment = await razorpay.payments.fetch(razorpay_payment_id);
-    } catch (rzpPayErr: any) {
-      console.error("[Diagnostics] Failed to fetch Razorpay payment:", rzpPayErr?.message || rzpPayErr);
+    } catch (rzpPayErr: unknown) {
+      console.error("[Diagnostics] Failed to fetch Razorpay payment:", rzpPayErr instanceof Error ? rzpPayErr.message : rzpPayErr);
       return NextResponse.json({ error: "Invalid Razorpay payment" }, { status: 400 });
     }
 
@@ -206,7 +253,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Payment amount mismatch" }, { status: 400 });
     }
 
-    if (rzpPayment.status !== "captured" && rzpPayment.status !== "authorized") {
+    if (rzpPayment.status !== "captured") {
       console.error(`[Diagnostics] Payment status not completed: ${rzpPayment.status}`);
       return NextResponse.json({ error: `Payment not completed. Status: ${rzpPayment.status}` }, { status: 400 });
     }
@@ -214,22 +261,75 @@ export async function POST(request: Request) {
     // ──────────────────────────────────────────────
     // 9. FULFILLMENT
     // ──────────────────────────────────────────────
-    // Create SUCCESS payment record
-    const { error: paymentError } = await supabaseAdmin.from("payments").insert({
-      order_id: order.id,
-      amount: order.amount,
-      status: "SUCCESS",
-      payment_method: rzpPayment.method || "razorpay",
-      gateway_payment_id: razorpay_payment_id,
-      gateway_signature: razorpay_signature,
-    });
+    // Recover an existing failed/pending attempt, or create the success record.
+    if (existingPayment) {
+      const { error: paymentUpdateError } = await supabaseAdmin
+        .from("payments")
+        .update({
+          status: "SUCCESS",
+          amount: Number(rzpPayment.amount) / 100,
+          payment_method: rzpPayment.method || "razorpay",
+          gateway_signature: razorpay_signature,
+        })
+        .eq("id", existingPayment.id);
 
-    if (paymentError) {
-      if (paymentError.code === "23505") {
-        console.log("[Diagnostics] Idempotent success: Payment record already exists (23505)");
-      } else {
-        console.error("[Diagnostics] Failed to create payment record:", paymentError);
-        return NextResponse.json({ error: "Failed to process payment record" }, { status: 500 });
+      if (paymentUpdateError) {
+        console.error("[Diagnostics] Failed to recover payment record:", paymentUpdateError);
+        return NextResponse.json({ error: "Failed to recover payment record" }, { status: 500 });
+      }
+    } else {
+      const { error: paymentError } = await supabaseAdmin.from("payments").insert({
+        order_id: order.id,
+        amount: Number(rzpPayment.amount) / 100,
+        status: "SUCCESS",
+        payment_method: rzpPayment.method || "razorpay",
+        gateway_payment_id: razorpay_payment_id,
+        gateway_signature: razorpay_signature,
+      });
+
+      if (paymentError) {
+        if (paymentError.code !== "23505") {
+          console.error("[Diagnostics] Failed to create payment record:", paymentError);
+          return NextResponse.json({ error: "Failed to process payment record" }, { status: 500 });
+        }
+
+        // A concurrent webhook/verification may have inserted the row.
+        const { data: duplicatePayment, error: duplicateLookupError } =
+          await supabaseAdmin
+            .from("payments")
+            .select("id, status, order_id")
+            .eq("gateway_payment_id", razorpay_payment_id)
+            .maybeSingle();
+
+        if (
+          duplicateLookupError ||
+          !duplicatePayment ||
+          duplicatePayment.order_id !== order.id ||
+          duplicatePayment.status === "REFUNDED"
+        ) {
+          console.error("[Diagnostics] Duplicate payment needs reconciliation:", {
+            duplicateLookupError,
+            duplicateStatus: duplicatePayment?.status,
+          });
+          return NextResponse.json({ error: "Payment reconciliation required" }, { status: 500 });
+        }
+
+        if (duplicatePayment.status !== "SUCCESS") {
+          const { error: duplicateUpdateError } = await supabaseAdmin
+            .from("payments")
+            .update({
+              status: "SUCCESS",
+              amount: Number(rzpPayment.amount) / 100,
+              payment_method: rzpPayment.method || "razorpay",
+              gateway_signature: razorpay_signature,
+            })
+            .eq("id", duplicatePayment.id);
+
+          if (duplicateUpdateError) {
+            console.error("[Diagnostics] Duplicate payment recovery failed:", duplicateUpdateError);
+            return NextResponse.json({ error: "Payment recovery failed" }, { status: 500 });
+          }
+        }
       }
     }
 
@@ -259,8 +359,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: true }, { status: 200 });
 
-  } catch (err: any) {
-    console.error("[Diagnostics] Payment verification error:", err?.message || err);
+  } catch (err: unknown) {
+    console.error("[Diagnostics] Payment verification error:", err instanceof Error ? err.message : err);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

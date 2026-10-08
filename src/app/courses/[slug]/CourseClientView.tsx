@@ -4,13 +4,13 @@ import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import Script from "next/script";
 import { useRouter } from "next/navigation";
-import { Course } from "@/types";
+import { Course, Lesson } from "@/types";
 import { useAuth } from "@/contexts/AuthContext";
 import { getEnrollment } from "@/lib/api/courses";
 import { supabase } from "@/lib/supabase";
 import { getStoredUtmParams } from "@/lib/utm";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Clock, BookOpen, User, PlayCircle, Lock, Loader2, CheckCircle2, ChevronDown, Sparkles, X } from "lucide-react";
+import { Clock, BookOpen, PlayCircle, Lock, Loader2, CheckCircle2, ChevronDown, Sparkles, X } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -21,14 +21,58 @@ interface CourseClientViewProps {
   course: Course;
 }
 
+interface RazorpayCheckoutResponse {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}
+
+interface RazorpayFailedResponse {
+  error?: {
+    code?: string;
+    description?: string;
+    reason?: string;
+  };
+}
+
+interface RazorpayCheckoutOptions {
+  key: string;
+  amount: number;
+  currency: string;
+  name: string;
+  description: string;
+  order_id: string;
+  handler: (response: RazorpayCheckoutResponse) => void | Promise<void>;
+  prefill: { name: string; email: string };
+  theme: { color: string };
+}
+
+interface RazorpayCheckoutInstance {
+  on(event: "payment.failed", callback: (response: RazorpayFailedResponse) => void): void;
+  open(): void;
+}
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: RazorpayCheckoutOptions) => RazorpayCheckoutInstance;
+  }
+}
+
 export default function CourseClientView({ course }: CourseClientViewProps) {
   const { user, isLoading: authLoading } = useAuth();
   const router = useRouter();
-  
+
   const [isEnrolled, setIsEnrolled] = useState(false);
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [enrollmentCheckLoading, setEnrollmentCheckLoading] = useState(true);
-  const [previewLesson, setPreviewLesson] = useState<any>(null);
+  const [previewLesson, setPreviewLesson] = useState<Lesson | null>(null);
+  const [razorpayStatus, setRazorpayStatus] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && typeof window.Razorpay === "function") {
+      setRazorpayStatus("ready");
+    }
+  }, []);
 
   const lastTrackedCourseId = useRef<string | null>(null);
 
@@ -74,7 +118,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
         setEnrollmentCheckLoading(false);
         return;
       }
-      
+
       try {
         const enrollment = await getEnrollment(course.id);
         setIsEnrolled(!!enrollment);
@@ -130,6 +174,15 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
         setIsEnrolled(true);
         router.push(`/dashboard/courses/${course.id}`);
       } else {
+        const isRazorpayLoaded = typeof window !== "undefined" && typeof window.Razorpay === "function";
+
+        if (!isRazorpayLoaded) {
+          if (razorpayStatus === "error") {
+            throw new Error("Payment gateway failed to load. Please refresh the page to try again.");
+          }
+          throw new Error("Payment gateway is still initializing. Please wait a moment and try again.");
+        }
+
         console.log("[GA4] begin_checkout firing");
         if (typeof window !== "undefined" && typeof window.gtag === "function") {
           window.gtag("event", "begin_checkout", {
@@ -170,14 +223,14 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
           throw new Error(checkoutData.error || "Checkout failed");
         }
 
-        const options = {
+        const options: RazorpayCheckoutOptions = {
           key: checkoutData.razorpay_key_id,
-          amount: Math.round(Number(course.price) * 100),
+          amount: Math.round(Number(checkoutData.order.amount) * 100),
           currency: "INR",
           name: "Capital Gain Hub",
           description: course.title,
           order_id: checkoutData.order.gateway_order_id,
-          handler: async function (response: any) {
+          handler: async function (response: RazorpayCheckoutResponse) {
             try {
               const verifyRes = await fetch("/api/payments/razorpay/verify", {
                 method: "POST",
@@ -191,7 +244,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
                   razorpay_signature: response.razorpay_signature,
                 }),
               });
-              
+
               const verifyData = await verifyRes.json();
               if (!verifyRes.ok) {
                 throw new Error(verifyData.error || "Payment verification failed");
@@ -206,24 +259,24 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
                 });
                 window.gtag("event", "purchase", {
                   transaction_id,
-                  value: Number(course.price),
+                  value: Number(checkoutData.order.amount),
                   currency: "INR",
                   items: [
                     {
                       item_id: course.id,
                       item_name: course.title,
-                      price: Number(course.price),
+                      price: Number(checkoutData.order.amount),
                       quantity: 1,
                     },
                   ],
                 });
               }
-              
+
               setIsEnrolled(true);
               router.push(`/dashboard/courses/${course.id}`);
-            } catch (err: any) {
+            } catch (err: unknown) {
               console.error("Verification error:", err);
-              alert(err.message || "Verification failed");
+              alert(err instanceof Error ? err.message : "Verification failed");
             }
           },
           prefill: {
@@ -235,16 +288,29 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
           }
         };
 
-        const rzp = new (window as any).Razorpay(options);
-        rzp.on("payment.failed", function (response: any){
+        const RazorpayCheckout = window.Razorpay;
+        if (typeof RazorpayCheckout !== "function") {
+          throw new Error(
+            "Razorpay checkout script is not ready. Please refresh and try again."
+          );
+        }
+
+        let rzp;
+        try {
+          rzp = new RazorpayCheckout(options);
+        } catch (constructorError) {
+          console.error("Razorpay constructor failed:", constructorError);
+          throw new Error("Failed to initialize payment gateway. Please contact support or try again.");
+        }
+        rzp.on("payment.failed", function (response: RazorpayFailedResponse) {
           console.error(response.error);
-          alert("Payment failed. Please try again.");
+          alert(response.error?.description || "Payment failed. Please try again.");
         });
         rzp.open();
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("Enrollment failed:", error);
-      alert(error.message || "Failed to enroll. Please try again.");
+      alert(error instanceof Error ? error.message : "Failed to enroll. Please try again.");
     } finally {
       setIsEnrolling(false);
     }
@@ -281,23 +347,40 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
 
   return (
     <div className="pb-32 bg-black min-h-screen font-sans text-white">
-      <Script src="https://checkout.razorpay.com/v1/checkout.js" strategy="lazyOnload" />
-      
+      <Script
+        id="razorpay-sdk"
+        src="https://checkout.razorpay.com/v1/checkout.js"
+        strategy="afterInteractive"
+        onLoad={() => {
+          if (typeof window !== "undefined") {
+            setRazorpayStatus(typeof window.Razorpay === "function" ? "ready" : "error");
+          }
+        }}
+        onReady={() => {
+          if (typeof window !== "undefined") {
+            setRazorpayStatus(typeof window.Razorpay === "function" ? "ready" : "error");
+          }
+        }}
+        onError={() => {
+          setRazorpayStatus("error");
+        }}
+      />
+
       {/* Course Hero - Cinematic 2027 Style */}
       <div className="relative pt-32 pb-20 md:pt-40 md:pb-32 border-b border-white/5 overflow-hidden">
         {/* Abstract Backgrounds */}
         <div className="absolute inset-0 bg-black z-0" />
         <div className="absolute top-0 right-0 w-[800px] h-[800px] bg-primary/10 rounded-full blur-[120px] pointer-events-none -z-0 translate-x-1/3 -translate-y-1/3" />
         <div className="absolute bottom-0 left-0 w-[600px] h-[600px] bg-cyan-500/5 rounded-full blur-[100px] pointer-events-none -z-0 -translate-x-1/3 translate-y-1/3" />
-        
+
         {/* Subtle Grid */}
         <div className="absolute inset-0 bg-[url('/noise.svg')] opacity-20 brightness-100 contrast-150 mix-blend-overlay z-0"></div>
         <div className="absolute inset-0 bg-[url('/grid.svg')] opacity-[0.05] bg-[size:64px_64px] z-0" />
 
         <div className="container mx-auto px-4 md:px-6 relative z-10">
           <div className="flex flex-col lg:flex-row gap-16 items-center">
-            
-            <motion.div 
+
+            <motion.div
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8, ease: "easeOut" }}
@@ -317,15 +400,15 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
                   </span>
                 )}
               </div>
-              
+
               <h1 className="text-4xl md:text-6xl lg:text-7xl font-black tracking-tighter leading-[1.1] text-white">
                 {course.title}
               </h1>
-              
+
               <p className="text-xl md:text-2xl text-muted-foreground leading-relaxed max-w-2xl font-medium">
                 {course.description}
               </p>
-              
+
               <div className="flex flex-wrap items-center gap-6 pt-6">
                 <div className="flex items-center gap-3 bg-white/5 px-4 py-2.5 rounded-xl border border-white/5 backdrop-blur-sm">
                   <BookOpen className="w-5 h-5 text-primary" />
@@ -343,7 +426,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
             </motion.div>
 
             {/* Premium Enrollment Card */}
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.8, delay: 0.2, ease: "easeOut" }}
@@ -351,7 +434,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
             >
               <div className="glass-card rounded-[2rem] p-3 border border-white/10 relative overflow-hidden bg-black/60 backdrop-blur-2xl shadow-[0_0_50px_rgba(0,0,0,0.5)]">
                 <div className="absolute top-0 right-0 w-64 h-64 bg-primary/20 blur-[80px] -z-10 pointer-events-none" />
-                
+
                 <div className="relative aspect-video rounded-[1.5rem] overflow-hidden mb-8 group z-0">
                   <CinematicVideo
                     src={undefined}
@@ -362,7 +445,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
                   />
                   <div className="absolute inset-0 ring-1 ring-inset ring-white/10 rounded-[1.5rem] z-20 pointer-events-none" />
                 </div>
-                
+
                 <div className="px-6 pb-6 space-y-8">
                   <div className="flex flex-col items-center text-center">
                     <span className="text-sm font-bold uppercase tracking-widest text-muted-foreground mb-2">Investment</span>
@@ -372,7 +455,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
                     </div>
                     <span className="text-sm text-primary font-bold mt-2 bg-primary/10 px-3 py-1 rounded-full">Lifetime Access</span>
                   </div>
-                  
+
                   {authLoading || enrollmentCheckLoading ? (
                     <Button size="lg" disabled className="w-full h-16 rounded-2xl text-lg font-bold bg-white/5 border border-white/10">
                       <Loader2 className="w-6 h-6 mr-3 animate-spin text-primary" />
@@ -383,32 +466,46 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
                         Login to Enroll
                     </Link>
                   ) : isEnrolled ? (
-                    <Button 
-                      size="lg" 
+                    <Button
+                      size="lg"
                       onClick={handleEnroll}
                       className="w-full h-16 rounded-2xl text-lg font-bold shadow-[0_0_30px_rgba(23,163,74,0.3)] bg-primary hover:bg-primary/90 text-primary-foreground hover:scale-[1.02] transition-all"
                     >
                       Enter Command Center
                     </Button>
                   ) : (
-                    <Button 
-                      size="lg" 
+                    <Button
+                      size="lg"
                       onClick={handleEnroll}
-                      disabled={isEnrolling}
-                      className="w-full h-16 rounded-2xl text-lg font-bold shadow-[0_0_30px_rgba(23,163,74,0.3)] bg-primary hover:bg-primary/90 text-primary-foreground hover:scale-[1.02] transition-all relative overflow-hidden group"
+                      disabled={isEnrolling || razorpayStatus === "loading" || razorpayStatus === "error"}
+                      className={cn(
+                        "w-full h-16 rounded-2xl text-lg font-bold transition-all relative overflow-hidden group",
+                        razorpayStatus === "error"
+                          ? "bg-destructive text-destructive-foreground cursor-not-allowed opacity-90"
+                          : "shadow-[0_0_30px_rgba(23,163,74,0.3)] bg-primary hover:bg-primary/90 text-primary-foreground hover:scale-[1.02]"
+                      )}
                     >
-                      <div className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
+                      {!isEnrolling && razorpayStatus === "ready" && (
+                        <div className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
+                      )}
                       {isEnrolling ? (
                         <>
                           <Loader2 className="w-6 h-6 mr-3 animate-spin" />
                           Processing...
                         </>
+                      ) : razorpayStatus === "loading" ? (
+                        <>
+                          <Loader2 className="w-6 h-6 mr-3 animate-spin" />
+                          Initializing Gateway...
+                        </>
+                      ) : razorpayStatus === "error" ? (
+                        "Gateway Error - Please Refresh"
                       ) : (
                         "Enroll Now"
                       )}
                     </Button>
                   )}
-                  
+
                   <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground pt-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                     <span>Refunds subject to our Refund Policy</span>
@@ -422,7 +519,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
       </div>
 
       {/* Curriculum Section */}
-      <div className={cn("container mx-auto px-4 md:px-6 pt-24", 
+      <div className={cn("container mx-auto px-4 md:px-6 pt-24",
         (course.features?.length || course.instructor_details?.name) ? "grid lg:grid-cols-12 gap-16" : "max-w-4xl"
       )}>
         <div className={cn("space-y-20", (course.features?.length || course.instructor_details?.name) ? "lg:col-span-8" : "")}>
@@ -439,7 +536,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
               {course.overview_description && (
                 <p className="text-xl text-muted-foreground font-medium mb-10">{course.overview_description}</p>
               )}
-              
+
               {course.learning_outcomes && course.learning_outcomes.length > 0 && (
                 <div className="grid sm:grid-cols-2 gap-6">
                   {course.learning_outcomes.map((item, i) => (
@@ -530,7 +627,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
           <div className="lg:col-span-4">
             <div className="sticky top-32 space-y-8">
               {course.instructor_details?.name && (
-                <motion.div 
+                <motion.div
                   initial={{ opacity: 0, x: 20 }}
                   whileInView={{ opacity: 1, x: 0 }}
                   viewport={{ once: true }}
@@ -561,7 +658,7 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
               )}
 
               {course.features && course.features.length > 0 && (
-                <motion.div 
+                <motion.div
                   initial={{ opacity: 0, x: 20 }}
                   whileInView={{ opacity: 1, x: 0 }}
                   viewport={{ once: true }}
@@ -587,14 +684,14 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
       <AnimatePresence>
         {previewLesson && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-12">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="absolute inset-0 bg-black/90 backdrop-blur-xl"
               onClick={() => setPreviewLesson(null)}
             />
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
@@ -609,9 +706,9 @@ export default function CourseClientView({ course }: CourseClientViewProps) {
                   <X className="w-6 h-6" />
                 </Button>
               </div>
-              
+
               <div className="relative w-full aspect-video bg-black flex items-center justify-center">
-                <VideoPlayer 
+                <VideoPlayer
                   provider={previewLesson.video_provider}
                   videoId={previewLesson.video_id}
                   lessonId={previewLesson.id}
