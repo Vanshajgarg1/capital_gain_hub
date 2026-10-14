@@ -101,6 +101,7 @@ export default function EditCoursePage() {
 
     try {
       await updateCourse(courseId, formData);
+      router.refresh();
       setSuccess("Program parameters updated successfully.");
       // clear success message after 3 seconds
       setTimeout(() => setSuccess(""), 3000);
