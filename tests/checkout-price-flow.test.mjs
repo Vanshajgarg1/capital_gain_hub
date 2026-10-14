@@ -4677,6 +4677,7 @@ test("Scenario 48: Verify reconciliation log 23505 conflict with mismatched exis
     ],
   });
 
+  let orderSelectCount = 0;
   const origFrom = supabaseAdmin.from;
   supabaseAdmin.from = function (table) {
     const builder = origFrom(table);
@@ -4696,9 +4697,14 @@ test("Scenario 48: Verify reconciliation log 23505 conflict with mismatched exis
       const origSelect = builder.select;
       builder.select = function (fields) {
         const sBuilder = origSelect(fields);
+        const origMaybeSingle = sBuilder.maybeSingle;
         sBuilder.maybeSingle = function () {
+          orderSelectCount++;
+          if (orderSelectCount === 1) {
+            return origMaybeSingle ? origMaybeSingle.call(sBuilder) : Promise.resolve({ data: supabaseAdmin.db.orders[0], error: null });
+          }
           return Promise.resolve({
-            data: { id: "order-verify-local", status: "CANCELLED" },
+            data: { id: "order-verify-local", user_id: "user-verify", course_id: "course-verify", amount: 999, status: "CANCELLED" },
             error: null,
           });
         };
@@ -4715,7 +4721,7 @@ test("Scenario 48: Verify reconciliation log 23505 conflict with mismatched exis
 
   const mockRazorpay = {
     orders: {
-      fetch: async () => ({ id: rzpOrderId, amount: 99900, status: "paid" }),
+      fetch: async () => ({ id: rzpOrderId, amount: 99900, currency: "INR", status: "paid" }),
     },
     payments: {
       fetch: async () => ({
@@ -4776,6 +4782,7 @@ test("Scenario 49: Verify concurrent cancellation during SUCCESS-payment recover
     payment_reconciliation_logs: [],
   });
 
+  let orderSelectCount = 0;
   const origFrom = supabaseAdmin.from;
   supabaseAdmin.from = function (table) {
     const builder = origFrom(table);
@@ -4795,9 +4802,14 @@ test("Scenario 49: Verify concurrent cancellation during SUCCESS-payment recover
       const origSelect = builder.select;
       builder.select = function (fields) {
         const sBuilder = origSelect(fields);
+        const origMaybeSingle = sBuilder.maybeSingle;
         sBuilder.maybeSingle = function () {
+          orderSelectCount++;
+          if (orderSelectCount === 1) {
+            return origMaybeSingle ? origMaybeSingle.call(sBuilder) : Promise.resolve({ data: supabaseAdmin.db.orders[0], error: null });
+          }
           return Promise.resolve({
-            data: { id: "order-recov-cancel-local", status: "CANCELLED" },
+            data: { id: "order-recov-cancel-local", user_id: "user-verify", course_id: "course-verify", amount: 999, status: "CANCELLED" },
             error: null,
           });
         };
@@ -4865,6 +4877,7 @@ test("Scenario 50: Verify concurrent completion during SUCCESS-payment recovery 
     enrollments: [],
   });
 
+  let orderSelectCount = 0;
   const origFrom = supabaseAdmin.from;
   supabaseAdmin.from = function (table) {
     const builder = origFrom(table);
@@ -4884,9 +4897,14 @@ test("Scenario 50: Verify concurrent completion during SUCCESS-payment recovery 
       const origSelect = builder.select;
       builder.select = function (fields) {
         const sBuilder = origSelect(fields);
+        const origMaybeSingle = sBuilder.maybeSingle;
         sBuilder.maybeSingle = function () {
+          orderSelectCount++;
+          if (orderSelectCount === 1) {
+            return origMaybeSingle ? origMaybeSingle.call(sBuilder) : Promise.resolve({ data: supabaseAdmin.db.orders[0], error: null });
+          }
           return Promise.resolve({
-            data: { id: "order-recov-comp-local", status: "COMPLETED" },
+            data: { id: "order-recov-comp-local", user_id: "user-verify", course_id: "course-verify", amount: 999, status: "COMPLETED" },
             error: null,
           });
         };
