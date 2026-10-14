@@ -289,16 +289,30 @@ export async function POST(request: Request) {
             gatewayOrderId: pendingOrder.gateway_order_id,
           });
 
-          const { error: cancelError } = await supabaseAdmin
+          const { data: cancelledOrder, error: cancelError } = await supabaseAdmin
             .from("orders")
             .update({ status: "CANCELLED" })
-            .eq("id", pendingOrder.id);
+            .eq("id", pendingOrder.id)
+            .eq("status", "PENDING")
+            .select("id")
+            .maybeSingle();
 
           if (cancelError) {
             console.error(`[Checkout:${reqId}] Failed to cancel stale local order`, cancelError);
             return NextResponse.json(
               { error: "PAYMENT_SESSION_STALE" },
               { status: 503 }
+            );
+          }
+
+          if (!cancelledOrder) {
+            console.warn(`[Checkout:${reqId}] Stale missing order was no longer PENDING, aborting cancellation`, pendingOrder.id);
+            return NextResponse.json(
+              {
+                error: "CONCURRENT_CHECKOUT",
+                message: "Another checkout process is running. Please retry.",
+              },
+              { status: 409 }
             );
           }
 

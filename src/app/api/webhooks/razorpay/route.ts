@@ -69,7 +69,8 @@ export async function POST(request: Request) {
     }
 
     if (
-      currency !== "INR" ||
+      !currency ||
+      typeof currency !== "string" ||
       !Number.isFinite(Number(amountPaise)) ||
       Number(amountPaise) <= 0
     ) {
@@ -142,14 +143,46 @@ export async function POST(request: Request) {
 
       if (existingPayment) {
         if (existingPayment.status !== "FAILED") {
-          const { error } = await supabaseAdmin
+          const { data: updatedPayment, error } = await supabaseAdmin
             .from("payments")
             .update({ status: "FAILED" })
-            .eq("id", existingPayment.id);
+            .eq("id", existingPayment.id)
+            .in("status", ["PENDING"])
+            .select("id, status")
+            .maybeSingle();
 
           if (error) {
             console.error("[Razorpay webhook] Failed to update payment", error);
             return NextResponse.json({ error: "Payment update failed" }, { status: 500 });
+          }
+
+          if (!updatedPayment) {
+            const { data: currentPayment, error: readError } = await supabaseAdmin
+              .from("payments")
+              .select("status")
+              .eq("id", existingPayment.id)
+              .maybeSingle();
+
+            if (readError || !currentPayment) {
+              console.error("[Razorpay webhook] Failed payment re-check error:", readError);
+              return NextResponse.json({ error: "Payment verification failed" }, { status: 500 });
+            }
+
+            if (["SUCCESS", "REFUNDED"].includes(currentPayment.status)) {
+              return NextResponse.json(
+                { success: true, message: "Existing payment status preserved" },
+                { status: 200 }
+              );
+            }
+
+            if (currentPayment.status === "FAILED") {
+              return NextResponse.json(
+                { success: true, message: "Failed payment recorded" },
+                { status: 200 }
+              );
+            }
+
+            return NextResponse.json({ error: "Payment state conflict" }, { status: 409 });
           }
         }
       } else {
@@ -194,22 +227,146 @@ export async function POST(request: Request) {
 
     const actualAmountPaid = Number(amountPaise) / 100;
 
+    const isAmountMismatch = localAmountPaise !== Number(amountPaise);
+    const isCurrencyMismatch = currency !== "INR";
+    const hasMismatch = isAmountMismatch || isCurrencyMismatch;
+
+    if (hasMismatch) {
+      console.error("[Razorpay webhook] Amount or currency mismatch recorded for manual reconciliation", {
+        localOrderId: order.id,
+        localAmountPaise,
+        gatewayAmountPaise: Number(amountPaise),
+        currency,
+      });
+
+      // Preserve payment evidence without marking it SUCCESS.
+      // If payment already exists with SUCCESS, do not overwrite/downgrade history.
+      if (!existingPayment) {
+        const { error: insertError } = await supabaseAdmin.from("payments").insert({
+          order_id: order.id,
+          amount: actualAmountPaid,
+          status: "FAILED",
+          payment_method: paymentEntity?.method || "unknown",
+          gateway_payment_id: razorpay_payment_id,
+          gateway_signature: null,
+        });
+
+        if (insertError && insertError.code !== "23505") {
+          console.error("[Razorpay webhook] Failed to record mismatched payment", insertError);
+          return NextResponse.json({ error: "Payment recording failed" }, { status: 500 });
+        }
+      } else if (existingPayment.status !== "SUCCESS" && existingPayment.status !== "REFUNDED") {
+        const { error: updateError } = await supabaseAdmin
+          .from("payments")
+          .update({
+            status: "FAILED",
+            amount: actualAmountPaid,
+            payment_method: paymentEntity?.method || "unknown",
+          })
+          .eq("id", existingPayment.id)
+          .in("status", ["PENDING", "FAILED"]);
+
+        if (updateError) {
+          console.error("[Razorpay webhook] Failed to update mismatched payment", updateError);
+          return NextResponse.json({ error: "Payment update failed" }, { status: 500 });
+        }
+      }
+
+      const reason = currency !== "INR" ? "OTHER" : "AMOUNT_MISMATCH";
+      const { error: logError } = await supabaseAdmin.from("payment_reconciliation_logs").insert({
+        order_id: order.id,
+        gateway_payment_id: razorpay_payment_id,
+        gateway_order_id: razorpay_order_id,
+        expected_amount: order.amount,
+        actual_amount: actualAmountPaid,
+        currency: currency || "INR",
+        reason,
+      });
+
+      if (logError) {
+        if (logError.code === "23505") {
+          const { data: existingLog, error: logReadError } = await supabaseAdmin
+            .from("payment_reconciliation_logs")
+            .select("order_id, gateway_payment_id")
+            .eq("gateway_payment_id", razorpay_payment_id)
+            .eq("status", "PENDING")
+            .maybeSingle();
+
+          if (
+            logReadError ||
+            !existingLog ||
+            existingLog.order_id !== order.id ||
+            existingLog.gateway_payment_id !== razorpay_payment_id
+          ) {
+            console.error("[Razorpay webhook] Reconciliation log conflict verification failed:", {
+              logReadError,
+              existingLog,
+            });
+            return NextResponse.json({ error: "Reconciliation log verification failed" }, { status: 500 });
+          }
+        } else {
+          console.error("[Razorpay webhook] Failed to record reconciliation log", logError);
+          return NextResponse.json({ error: "Reconciliation logging failed" }, { status: 500 });
+        }
+      }
+
+      return NextResponse.json(
+        { status: "amount_mismatch_recorded" },
+        { status: 200 }
+      );
+    }
+
     if (existingPayment) {
+      if (existingPayment.status === "REFUNDED") {
+        return NextResponse.json(
+          { status: "refunded_payment_not_fulfilled" },
+          { status: 200 }
+        );
+      }
+
       // Recover a previous FAILED/PENDING record when the same payment
       // is subsequently confirmed captured by Razorpay.
       if (existingPayment.status !== "SUCCESS") {
-        const { error } = await supabaseAdmin
+        const { data: updatedPayment, error } = await supabaseAdmin
           .from("payments")
           .update({
             status: "SUCCESS",
             amount: actualAmountPaid,
             payment_method: paymentEntity?.method || "unknown",
           })
-          .eq("id", existingPayment.id);
+          .eq("id", existingPayment.id)
+          .in("status", ["PENDING", "FAILED"])
+          .select("id, status")
+          .maybeSingle();
 
         if (error) {
           console.error("[Razorpay webhook] Payment recovery failed", error);
           return NextResponse.json({ error: "Payment recovery failed" }, { status: 500 });
+        }
+
+        if (!updatedPayment) {
+          const { data: currentPayment, error: readError } = await supabaseAdmin
+            .from("payments")
+            .select("status")
+            .eq("id", existingPayment.id)
+            .maybeSingle();
+
+          if (readError || !currentPayment) {
+            console.error("[Razorpay webhook] Payment status re-check failed:", readError);
+            return NextResponse.json({ error: "Payment verification failed" }, { status: 500 });
+          }
+
+          if (currentPayment.status === "REFUNDED") {
+            return NextResponse.json(
+              { status: "refunded_payment_not_fulfilled" },
+              { status: 200 }
+            );
+          }
+
+          if (currentPayment.status !== "SUCCESS") {
+            console.error("[Razorpay webhook] Payment state conflict:", currentPayment.status);
+            return NextResponse.json({ error: "Payment state conflict" }, { status: 409 });
+          }
         }
       }
     } else {
@@ -267,9 +424,31 @@ export async function POST(request: Request) {
         reason: "CANCELLED_ORDER"
       });
 
-      if (logError && logError.code !== "23505") {
-        console.error("[Razorpay webhook] Failed to record reconciliation log", logError);
-        return NextResponse.json({ error: "Reconciliation logging failed" }, { status: 500 });
+      if (logError) {
+        if (logError.code === "23505") {
+          const { data: existingLog, error: logReadError } = await supabaseAdmin
+            .from("payment_reconciliation_logs")
+            .select("order_id, gateway_payment_id")
+            .eq("gateway_payment_id", razorpay_payment_id)
+            .eq("status", "PENDING")
+            .maybeSingle();
+
+          if (
+            logReadError ||
+            !existingLog ||
+            existingLog.order_id !== order.id ||
+            existingLog.gateway_payment_id !== razorpay_payment_id
+          ) {
+            console.error("[Razorpay webhook] Reconciliation log conflict verification failed:", {
+              logReadError,
+              existingLog,
+            });
+            return NextResponse.json({ error: "Reconciliation log verification failed" }, { status: 500 });
+          }
+        } else {
+          console.error("[Razorpay webhook] Failed to record reconciliation log", logError);
+          return NextResponse.json({ error: "Reconciliation logging failed" }, { status: 500 });
+        }
       }
       return NextResponse.json(
         { status: "manual_reconciliation_required" },
@@ -277,41 +456,85 @@ export async function POST(request: Request) {
       );
     }
 
-    if (localAmountPaise !== Number(amountPaise)) {
-      console.error("[Razorpay webhook] Amount mismatch recorded for manual reconciliation", {
-        localOrderId: order.id,
-        localAmountPaise,
-        gatewayAmountPaise: Number(amountPaise),
-      });
-      const { error: logError } = await supabaseAdmin.from("payment_reconciliation_logs").insert({
-        order_id: order.id,
-        gateway_payment_id: razorpay_payment_id,
-        gateway_order_id: razorpay_order_id,
-        expected_amount: order.amount,
-        actual_amount: actualAmountPaid,
-        currency: paymentEntity?.currency || "INR",
-        reason: "AMOUNT_MISMATCH"
-      });
-
-      if (logError && logError.code !== "23505") {
-        console.error("[Razorpay webhook] Failed to record reconciliation log", logError);
-        return NextResponse.json({ error: "Reconciliation logging failed" }, { status: 500 });
-      }
-      return NextResponse.json(
-        { status: "amount_mismatch_recorded" },
-        { status: 200 }
-      );
-    }
-
     if (order.status !== "COMPLETED") {
-      const { error } = await supabaseAdmin
+      const { data: updatedOrder, error } = await supabaseAdmin
         .from("orders")
         .update({ status: "COMPLETED" })
-        .eq("id", order.id);
+        .eq("id", order.id)
+        .eq("status", "PENDING")
+        .select("id, status")
+        .maybeSingle();
 
       if (error) {
         console.error("[Razorpay webhook] Order completion failed", error);
         return NextResponse.json({ error: "Order update failed" }, { status: 500 });
+      }
+
+      if (!updatedOrder) {
+        // Check if order was concurrently marked CANCELLED or COMPLETED
+        const { data: currentOrder, error: checkError } = await supabaseAdmin
+          .from("orders")
+          .select("id, status")
+          .eq("id", order.id)
+          .maybeSingle();
+
+        if (checkError || !currentOrder) {
+          console.error("[Razorpay webhook] Order lookup failed", checkError);
+          return NextResponse.json({ error: "Order lookup failed" }, { status: 500 });
+        }
+
+        if (currentOrder.status === "CANCELLED") {
+          console.error("[Razorpay webhook] Captured payment for cancelled order (concurrent cancel)", {
+            localOrderId: order.id,
+            gatewayPaymentId: razorpay_payment_id,
+          });
+          const { error: logError } = await supabaseAdmin.from("payment_reconciliation_logs").insert({
+            order_id: order.id,
+            gateway_payment_id: razorpay_payment_id,
+            gateway_order_id: razorpay_order_id,
+            expected_amount: order.amount,
+            actual_amount: actualAmountPaid,
+            currency: paymentEntity?.currency || "INR",
+            reason: "CANCELLED_ORDER"
+          });
+
+          if (logError) {
+            if (logError.code === "23505") {
+              const { data: existingLog, error: logReadError } = await supabaseAdmin
+                .from("payment_reconciliation_logs")
+                .select("order_id, gateway_payment_id")
+                .eq("gateway_payment_id", razorpay_payment_id)
+                .eq("status", "PENDING")
+                .maybeSingle();
+
+              if (
+                logReadError ||
+                !existingLog ||
+                existingLog.order_id !== order.id ||
+                existingLog.gateway_payment_id !== razorpay_payment_id
+              ) {
+                console.error("[Razorpay webhook] Reconciliation log conflict verification failed:", {
+                  logReadError,
+                  existingLog,
+                });
+                return NextResponse.json({ error: "Reconciliation log verification failed" }, { status: 500 });
+              }
+            } else {
+              console.error("[Razorpay webhook] Failed to record reconciliation log", logError);
+              return NextResponse.json({ error: "Reconciliation logging failed" }, { status: 500 });
+            }
+          }
+
+          return NextResponse.json(
+            { status: "manual_reconciliation_required" },
+            { status: 200 }
+          );
+        }
+
+        if (currentOrder.status !== "COMPLETED") {
+          console.error("[Razorpay webhook] Unexpected order status", currentOrder.status);
+          return NextResponse.json({ error: "Order state conflict" }, { status: 500 });
+        }
       }
     }
 
