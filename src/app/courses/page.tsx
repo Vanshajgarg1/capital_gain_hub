@@ -2,6 +2,8 @@ import { CourseCard } from "@/components/public/CourseCard";
 import { getPublishedCoursesWithContent } from "@/lib/api/courses";
 import { ScrollReveal } from "@/components/ui/animations/ScrollReveal";
 
+export const dynamic = "force-dynamic";
+
 export const metadata = {
   title: "Courses | Capital Gain Hub",
   description: "Browse our premium trading courses.",
