@@ -1,4 +1,8 @@
 import { notFound } from "next/navigation";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import { getCourseBySlug } from "@/lib/api/courses";
 import CourseClientView from "./CourseClientView";
 
