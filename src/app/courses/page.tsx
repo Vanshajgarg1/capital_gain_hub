@@ -1,4 +1,8 @@
 import { CourseCard } from "@/components/public/CourseCard";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import { getPublishedCoursesWithContent } from "@/lib/api/courses";
 import { ScrollReveal } from "@/components/ui/animations/ScrollReveal";
 
